@@ -6,9 +6,9 @@ class BillItem {
   final int productId;
   final double quantity;
   final double price;
-  final String? docId;       // Firestore document ID
+  final String? firestoreId; // Firestore document ID
   final DateTime? updatedAt; // Last update time (local or cloud)
-  final bool isSynced;       // ✅ Tracks if this record is already synced to cloud
+  final bool isSynced;       // Tracks if this record is synced to cloud
 
   const BillItem({
     this.id,
@@ -16,7 +16,7 @@ class BillItem {
     required this.productId,
     required this.quantity,
     required this.price,
-    this.docId,
+    this.firestoreId,
     this.updatedAt,
     this.isSynced = false,
   });
@@ -48,7 +48,7 @@ class BillItem {
   factory BillItem.fromFirestore(DocumentSnapshot doc) {
     final data = doc.data() as Map<String, dynamic>? ?? {};
     return BillItem(
-      docId: doc.id,
+      firestoreId: doc.id,
       id: data['id'] as int?,
       billId: data['billId'] as int?,
       productId: (data['productId'] ?? 0) as int,
@@ -57,7 +57,7 @@ class BillItem {
       updatedAt: data['updatedAt'] is Timestamp
           ? (data['updatedAt'] as Timestamp).toDate()
           : null,
-      isSynced: true, // when reading from Firestore, we consider it synced
+      isSynced: true, // reading from Firestore means synced
     );
   }
 
@@ -71,6 +71,7 @@ class BillItem {
     updatedAt: map['updatedAt'] != null
         ? DateTime.tryParse(map['updatedAt'].toString())
         : null,
+    firestoreId: map['firestoreId'] as String?,
     isSynced: (map['isSynced'] ?? 0) == 1,
   );
 
@@ -82,7 +83,7 @@ class BillItem {
     int? productId,
     double? quantity,
     double? price,
-    String? docId,
+    String? firestoreId,
     DateTime? updatedAt,
     bool? isSynced,
   }) {
@@ -92,7 +93,7 @@ class BillItem {
       productId: productId ?? this.productId,
       quantity: quantity ?? this.quantity,
       price: price ?? this.price,
-      docId: docId ?? this.docId,
+      firestoreId: firestoreId ?? this.firestoreId,
       updatedAt: updatedAt ?? this.updatedAt,
       isSynced: isSynced ?? this.isSynced,
     );
@@ -108,7 +109,7 @@ class BillItem {
               productId == other.productId &&
               quantity == other.quantity &&
               price == other.price &&
-              docId == other.docId;
+              firestoreId == other.firestoreId;
 
   @override
   int get hashCode =>
@@ -117,5 +118,5 @@ class BillItem {
       productId.hashCode ^
       quantity.hashCode ^
       price.hashCode ^
-      (docId?.hashCode ?? 0);
+      (firestoreId?.hashCode ?? 0);
 }

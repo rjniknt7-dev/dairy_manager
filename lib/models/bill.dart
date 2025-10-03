@@ -8,6 +8,8 @@ class Bill {
   final double paidAmount;
   final double carryForward;
   final DateTime date;
+  final bool isSynced;         // Track sync status
+  final DateTime? updatedAt;   // Track last update
 
   const Bill({
     this.id,
@@ -17,11 +19,13 @@ class Bill {
     required this.paidAmount,
     required this.carryForward,
     required this.date,
+    this.isSynced = false,
+    this.updatedAt,
   });
 
   /* ------------ Conversions ------------ */
 
-  /// Save for local DB (keeps date as ISO string)
+  /// Save for local DB (SQLite)
   Map<String, dynamic> toMap() {
     return {
       'id': id,
@@ -31,10 +35,12 @@ class Bill {
       'paidAmount': paidAmount,
       'carryForward': carryForward,
       'date': date.toIso8601String(),
+      'isSynced': isSynced ? 1 : 0,
+      'updatedAt': updatedAt?.toIso8601String(),
     };
   }
 
-  /// Save for Firestore (uses native Timestamp for queries)
+  /// Save for Firestore
   Map<String, dynamic> toFirestore() {
     return {
       'id': id,
@@ -43,6 +49,7 @@ class Bill {
       'paidAmount': paidAmount,
       'carryForward': carryForward,
       'date': Timestamp.fromDate(date),
+      'updatedAt': updatedAt != null ? Timestamp.fromDate(updatedAt!) : null,
     };
   }
 
@@ -55,15 +62,23 @@ class Bill {
       paidAmount: (map['paidAmount'] ?? 0).toDouble(),
       carryForward: (map['carryForward'] ?? 0).toDouble(),
       date: DateTime.tryParse(map['date']?.toString() ?? '') ?? DateTime.now(),
+      isSynced: (map['isSynced'] ?? 0) == 1,
+      updatedAt: map['updatedAt'] != null
+          ? DateTime.tryParse(map['updatedAt'] as String)
+          : null,
     );
   }
 
-  /// Directly from a Firestore document
   factory Bill.fromFirestore(String docId, Map<String, dynamic> data) {
     final rawDate = data['date'];
     final parsedDate = rawDate is Timestamp
         ? rawDate.toDate()
         : DateTime.tryParse(rawDate?.toString() ?? '') ?? DateTime.now();
+
+    final rawUpdated = data['updatedAt'];
+    final parsedUpdated = rawUpdated is Timestamp
+        ? rawUpdated.toDate()
+        : DateTime.tryParse(rawUpdated?.toString() ?? '');
 
     return Bill(
       id: data['id'] as int?,
@@ -73,6 +88,8 @@ class Bill {
       paidAmount: (data['paidAmount'] ?? 0).toDouble(),
       carryForward: (data['carryForward'] ?? 0).toDouble(),
       date: parsedDate,
+      isSynced: true,
+      updatedAt: parsedUpdated,
     );
   }
 
@@ -86,6 +103,8 @@ class Bill {
     double? paidAmount,
     double? carryForward,
     DateTime? date,
+    bool? isSynced,
+    DateTime? updatedAt,
   }) {
     return Bill(
       id: id ?? this.id,
@@ -95,6 +114,8 @@ class Bill {
       paidAmount: paidAmount ?? this.paidAmount,
       carryForward: carryForward ?? this.carryForward,
       date: date ?? this.date,
+      isSynced: isSynced ?? this.isSynced,
+      updatedAt: updatedAt ?? this.updatedAt,
     );
   }
 
@@ -110,8 +131,5 @@ class Bill {
 
   @override
   int get hashCode =>
-      id.hashCode ^
-      firestoreId.hashCode ^
-      clientId.hashCode ^
-      date.hashCode;
+      id.hashCode ^ firestoreId.hashCode ^ clientId.hashCode ^ date.hashCode;
 }

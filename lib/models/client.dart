@@ -1,25 +1,27 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
 class Client {
-  final int? id;             // Local SQLite ID
+  final int? id;               // Local SQLite ID
   final String name;
   final String phone;
   final String address;
-  final String? docId;       // Firestore document ID
-  final DateTime? updatedAt; // Last update time
-  final bool isSynced;       // ✅ For offline queueing (0/1 in SQLite)
+  final String? firestoreId;   // Firestore document ID
+  final DateTime? updatedAt;   // Last update time
+  final bool isSynced;         // Tracks if this record is synced to cloud
 
   const Client({
     this.id,
     required this.name,
     required this.phone,
     required this.address,
-    this.docId,
+    this.firestoreId,
     this.updatedAt,
     this.isSynced = false,
   });
 
-  /// Map for local SQLite
+  /* ------------ Conversions ------------ */
+
+  /// Local SQLite representation
   Map<String, dynamic> toMap() => {
     'id': id,
     'name': name,
@@ -27,9 +29,10 @@ class Client {
     'address': address,
     'updatedAt': updatedAt?.toIso8601String(),
     'isSynced': isSynced ? 1 : 0,
+    'firestoreId': firestoreId,
   };
 
-  /// Map for Firestore writes
+  /// Firestore representation
   Map<String, dynamic> toFirestore() => {
     'id': id,
     'name': name,
@@ -42,7 +45,7 @@ class Client {
   factory Client.fromFirestore(DocumentSnapshot doc) {
     final data = doc.data() as Map<String, dynamic>? ?? {};
     return Client(
-      docId: doc.id,
+      firestoreId: doc.id,
       id: data['id'] as int?,
       name: (data['name'] ?? '') as String,
       phone: (data['phone'] ?? '') as String,
@@ -50,7 +53,7 @@ class Client {
       updatedAt: data['updatedAt'] is Timestamp
           ? (data['updatedAt'] as Timestamp).toDate()
           : null,
-      isSynced: true, // Already in the cloud
+      isSynced: true,
     );
   }
 
@@ -63,8 +66,11 @@ class Client {
     updatedAt: map['updatedAt'] != null
         ? DateTime.tryParse(map['updatedAt'].toString())
         : null,
+    firestoreId: map['firestoreId'] as String?,
     isSynced: (map['isSynced'] ?? 0) == 1,
   );
+
+  /* ------------ Utilities ------------ */
 
   /// Create a modified copy
   Client copyWith({
@@ -72,7 +78,7 @@ class Client {
     String? name,
     String? phone,
     String? address,
-    String? docId,
+    String? firestoreId,
     DateTime? updatedAt,
     bool? isSynced,
   }) {
@@ -81,7 +87,7 @@ class Client {
       name: name ?? this.name,
       phone: phone ?? this.phone,
       address: address ?? this.address,
-      docId: docId ?? this.docId,
+      firestoreId: firestoreId ?? this.firestoreId,
       updatedAt: updatedAt ?? this.updatedAt,
       isSynced: isSynced ?? this.isSynced,
     );
@@ -91,11 +97,12 @@ class Client {
   bool operator ==(Object other) =>
       identical(this, other) ||
           other is Client &&
+              runtimeType == other.runtimeType &&
               id == other.id &&
               name == other.name &&
               phone == other.phone &&
               address == other.address &&
-              docId == other.docId;
+              firestoreId == other.firestoreId;
 
   @override
   int get hashCode =>
@@ -103,5 +110,5 @@ class Client {
       name.hashCode ^
       phone.hashCode ^
       address.hashCode ^
-      (docId?.hashCode ?? 0);
+      (firestoreId?.hashCode ?? 0);
 }

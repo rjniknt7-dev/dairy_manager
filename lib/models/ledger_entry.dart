@@ -1,16 +1,16 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
 class LedgerEntry {
-  final int? id;            // Local SQLite ID
-  final int clientId;       // Local client ID
-  final int? billId;        // Nullable: link to a bill if applicable
-  final String type;        // 'bill' or 'payment'
+  final int? id;              // Local SQLite ID
+  final int clientId;         // Local client ID
+  final int? billId;          // Nullable: link to a bill if applicable
+  final String type;          // 'bill' or 'payment'
   final double amount;
   final DateTime date;
   final String? note;
-  final String? docId;      // Firestore document ID
-  final DateTime? updatedAt; // Last update time in Firestore
-  final bool isSynced;      // ✅ Track if this row is already synced
+  final String? firestoreId;  // Firestore document ID
+  final DateTime? updatedAt;  // Last update time in Firestore
+  final bool isSynced;        // Tracks if this row is already synced
 
   const LedgerEntry({
     this.id,
@@ -20,12 +20,14 @@ class LedgerEntry {
     required this.amount,
     required this.date,
     this.note,
-    this.docId,
+    this.firestoreId,
     this.updatedAt,
     this.isSynced = false,
   });
 
-  /// Map for local SQLite — safe JSON values only
+  /* ------------ Conversions ------------ */
+
+  /// Local SQLite representation
   Map<String, dynamic> toMap() => {
     'id': id,
     'clientId': clientId,
@@ -36,9 +38,10 @@ class LedgerEntry {
     'note': note,
     'updatedAt': updatedAt?.toIso8601String(),
     'isSynced': isSynced ? 1 : 0,
+    'firestoreId': firestoreId,
   };
 
-  /// Map for Firestore with server-generated timestamp
+  /// Firestore representation
   Map<String, dynamic> toFirestore() => {
     'id': id,
     'clientId': clientId,
@@ -50,11 +53,11 @@ class LedgerEntry {
     'updatedAt': FieldValue.serverTimestamp(),
   };
 
-  /// Create from Firestore document snapshot
+  /// From Firestore document
   factory LedgerEntry.fromFirestore(DocumentSnapshot doc) {
     final data = doc.data() as Map<String, dynamic>? ?? {};
     return LedgerEntry(
-      docId: doc.id,
+      firestoreId: doc.id,
       id: data['id'] as int?,
       clientId: (data['clientId'] ?? 0) as int,
       billId: data['billId'] is int ? data['billId'] as int? : null,
@@ -69,7 +72,7 @@ class LedgerEntry {
     );
   }
 
-  /// Create from a local SQLite map
+  /// From local SQLite row
   factory LedgerEntry.fromMap(Map<String, dynamic> m) => LedgerEntry(
     id: m['id'] as int?,
     clientId: m['clientId'] as int,
@@ -80,11 +83,14 @@ class LedgerEntry {
         : (m['amount'] as num?)?.toDouble() ?? 0.0,
     date: DateTime.tryParse(m['date'] as String? ?? '') ?? DateTime.now(),
     note: m['note'] as String?,
+    firestoreId: m['firestoreId'] as String?,
     updatedAt: m['updatedAt'] != null
         ? DateTime.tryParse(m['updatedAt'].toString())
         : null,
     isSynced: (m['isSynced'] ?? 0) == 1,
   );
+
+  /* ------------ Utilities ------------ */
 
   /// Create a modified copy
   LedgerEntry copyWith({
@@ -95,7 +101,7 @@ class LedgerEntry {
     double? amount,
     DateTime? date,
     String? note,
-    String? docId,
+    String? firestoreId,
     DateTime? updatedAt,
     bool? isSynced,
   }) {
@@ -107,7 +113,7 @@ class LedgerEntry {
       amount: amount ?? this.amount,
       date: date ?? this.date,
       note: note ?? this.note,
-      docId: docId ?? this.docId,
+      firestoreId: firestoreId ?? this.firestoreId,
       updatedAt: updatedAt ?? this.updatedAt,
       isSynced: isSynced ?? this.isSynced,
     );
@@ -117,6 +123,7 @@ class LedgerEntry {
   bool operator ==(Object other) =>
       identical(this, other) ||
           other is LedgerEntry &&
+              runtimeType == other.runtimeType &&
               id == other.id &&
               clientId == other.clientId &&
               billId == other.billId &&
@@ -124,7 +131,7 @@ class LedgerEntry {
               amount == other.amount &&
               date == other.date &&
               note == other.note &&
-              docId == other.docId;
+              firestoreId == other.firestoreId;
 
   @override
   int get hashCode =>
@@ -135,5 +142,5 @@ class LedgerEntry {
       amount.hashCode ^
       date.hashCode ^
       (note?.hashCode ?? 0) ^
-      (docId?.hashCode ?? 0);
+      (firestoreId?.hashCode ?? 0);
 }

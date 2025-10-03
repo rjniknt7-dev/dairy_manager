@@ -5,6 +5,7 @@ class Product {
   final String name;
   final double weight;
   final double price;
+  final double costPrice;
   final double stock;           // always a number, default 0
   final String? firestoreId;    // Firestore document ID
   final DateTime? updatedAt;    // Last update time (local or server)
@@ -15,10 +16,11 @@ class Product {
     required this.name,
     required this.weight,
     required this.price,
+    this.costPrice = 0.0,
     this.stock = 0.0,
     this.firestoreId,
     this.updatedAt,
-    this.isSynced = false,       // default false
+    this.isSynced = false,
   });
 
   // -----------------------
@@ -31,17 +33,15 @@ class Product {
     return int.tryParse(v.toString());
   }
 
-  static int _parseInt(dynamic v, {int fallback = 0}) =>
-      _parseIntNullable(v) ?? fallback;
-
   static double _parseDouble(dynamic v, {double fallback = 0.0}) {
     if (v == null) return fallback;
     if (v is num) return v.toDouble();
     return double.tryParse(v.toString()) ?? fallback;
   }
 
-  static String _parseString(dynamic v, {String fallback = ''}) =>
-      v?.toString() ?? fallback;
+  static String _parseString(dynamic v, {String fallback = ''}) {
+    return v == null ? fallback : v.toString();
+  }
 
   static DateTime? _parseDateTime(dynamic v) {
     if (v == null) return null;
@@ -59,6 +59,7 @@ class Product {
     'name': name,
     'weight': weight,
     'price': price,
+    'costPrice': costPrice,
     'stock': stock,
     'firestoreId': firestoreId,
     'updatedAt': updatedAt?.toIso8601String(),
@@ -73,6 +74,7 @@ class Product {
     'name': name,
     'weight': weight,
     'price': price,
+    'costPrice': costPrice,
     'stock': stock,
     'updatedAt': FieldValue.serverTimestamp(),
   };
@@ -85,11 +87,10 @@ class Product {
     name: _parseString(m['name'], fallback: 'Unnamed Product'),
     weight: _parseDouble(m['weight']),
     price: _parseDouble(m['price']),
+    costPrice: _parseDouble(m['costPrice']),
     stock: _parseDouble(m['stock']),
     firestoreId: m['firestoreId']?.toString(),
-    updatedAt: m['updatedAt'] != null
-        ? _parseDateTime(m['updatedAt'])
-        : null,
+    updatedAt: m['updatedAt'] != null ? _parseDateTime(m['updatedAt']) : null,
     isSynced: (m['isSynced'] ?? 0) == 1,
   );
 
@@ -107,6 +108,7 @@ class Product {
       name: _parseString(data['name'], fallback: ''),
       weight: _parseDouble(data['weight']),
       price: _parseDouble(data['price']),
+      costPrice: _parseDouble(data['costPrice']),
       stock: _parseDouble(data['stock']),
       updatedAt: _parseDateTime(data['updatedAt']),
       isSynced: true, // already in cloud
@@ -121,6 +123,7 @@ class Product {
     String? name,
     double? weight,
     double? price,
+    double? costPrice,
     double? stock,
     String? firestoreId,
     DateTime? updatedAt,
@@ -131,6 +134,7 @@ class Product {
       name: name ?? this.name,
       weight: weight ?? this.weight,
       price: price ?? this.price,
+      costPrice: costPrice ?? this.costPrice,
       stock: stock ?? this.stock,
       firestoreId: firestoreId ?? this.firestoreId,
       updatedAt: updatedAt ?? this.updatedAt,
@@ -151,4 +155,8 @@ class Product {
 
   @override
   int get hashCode => id.hashCode ^ (firestoreId?.hashCode ?? 0) ^ name.hashCode;
+
+  @override
+  String toString() =>
+      'Product(id: $id, name: $name, price: $price, costPrice: $costPrice)';
 }

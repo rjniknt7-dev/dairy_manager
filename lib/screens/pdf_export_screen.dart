@@ -1,61 +1,82 @@
+// lib/screens/pdf_export_screen.dart
 import 'dart:typed_data';
+import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:printing/printing.dart';      // for PdfPreview
-import '../services/invoice_service.dart';    // your existing service
+import 'package:path_provider/path_provider.dart';
+import 'package:open_filex/open_filex.dart';
+import '../services/invoice_service.dart';
 
 class PdfExportScreen extends StatefulWidget {
-  const PdfExportScreen({Key? key}) : super(key: key);
+  final String customerName;
+  final String invoiceNo;
+  final DateTime date;
+  final List<Map<String, dynamic>> items;
+  final double receivedAmount;
+  final double? ledgerRemaining;
+
+  const PdfExportScreen({
+    super.key,
+    required this.customerName,
+    required this.invoiceNo,
+    required this.date,
+    required this.items,
+    required this.receivedAmount,
+    this.ledgerRemaining,
+  });
 
   @override
   State<PdfExportScreen> createState() => _PdfExportScreenState();
 }
 
 class _PdfExportScreenState extends State<PdfExportScreen> {
-  late Future<Uint8List> _pdfFuture;
+  bool isLoading = true;
 
   @override
   void initState() {
     super.initState();
+    _generateAndOpenPdf();
+  }
 
-    // TODO: Replace demo data with real values from SQLite/Firestore.
-    final demoItems = [
-      {'name': 'Cattle Feed', 'qty': 5.0, 'price': 320.0, 'gst': '5%'},
-      {'name': 'Mineral Mix', 'qty': 2.0, 'price': 450.0, 'gst': '12%'},
-    ];
+  Future<void> _generateAndOpenPdf() async {
+    try {
+      final pdfData = await InvoiceService().buildPdf(
+        customerName: widget.customerName,
+        invoiceNo: widget.invoiceNo,
+        date: widget.date,
+        items: widget.items,
+        receivedAmount: widget.receivedAmount,
+        ledgerRemaining: widget.ledgerRemaining,
+      );
 
-    _pdfFuture = InvoiceService().buildPdf(
-      companyName: 'YADAV PASHU AAHAR',
-      customerName: 'Demo Customer',
-      invoiceNo: 'INV-1001',
-      date: DateTime.now(),
-      items: demoItems,
-      receivedAmount: 1000.0,
-    );
+      final tempDir = await getTemporaryDirectory();
+      final file = File('${tempDir.path}/invoice_${widget.invoiceNo}.pdf');
+      await file.writeAsBytes(pdfData);
+
+      await OpenFilex.open(file.path);
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error generating PDF: $e')),
+      );
+    } finally {
+      setState(() => isLoading = false);
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Invoice Preview')),
-      body: FutureBuilder<Uint8List>(
-        future: _pdfFuture,
-        builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.waiting) {
-            return const Center(child: CircularProgressIndicator());
-          }
-          if (snapshot.hasError) {
-            return Center(child: Text('Error: ${snapshot.error}'));
-          }
-
-          final pdfBytes = snapshot.data!;
-          return PdfPreview(
-            build: (format) async => pdfBytes,
-            allowPrinting: true,
-            allowSharing: true,
-            canChangePageFormat: false,
-            pdfFileName: 'invoice_${DateTime.now().millisecondsSinceEpoch}.pdf',
-          );
-        },
+      appBar: AppBar(title: const Text('Invoice PDF')),
+      body: Center(
+        child: isLoading
+            ? Column(
+          mainAxisSize: MainAxisSize.min,
+          children: const [
+            CircularProgressIndicator(),
+            SizedBox(height: 12),
+            Text('Generating PDF...'),
+          ],
+        )
+            : const Icon(Icons.check_circle, color: Colors.green, size: 80),
       ),
     );
   }
