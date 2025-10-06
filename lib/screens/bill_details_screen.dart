@@ -224,7 +224,7 @@ class _BillDetailsScreenState extends State<BillDetailsScreen>
   Future<void> _deleteItem(BillItem item) async {
     final product = products.firstWhere(
           (p) => p.id == item.productId,
-      orElse: () => Product(id: item.productId, name: 'Unknown', weight: 0, price: 0),
+      orElse: () => Product(id: item.productId, name: 'Unknown', quantity: 0, price: 0),
     );
 
     final confirm = await showDialog<bool>(
@@ -300,7 +300,7 @@ class _BillDetailsScreenState extends State<BillDetailsScreen>
           orElse: () => Product(
             id: item.productId,
             name: 'Unknown Product',
-            weight: 0,
+            quantity: 0,
             price: 0,
           ),
         );
@@ -647,7 +647,7 @@ class _BillDetailsScreenState extends State<BillDetailsScreen>
                 orElse: () => Product(
                   id: item.productId,
                   name: 'Unknown Product',
-                  weight: 0,
+                  quantity: 0,
                   price: 0,
                 ),
               );

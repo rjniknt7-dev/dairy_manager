@@ -39,8 +39,6 @@ class _ClientScreenState extends State<ClientScreen>
     _animationController = AnimationController(
       duration: const Duration(milliseconds: 800),
       vsync: this,
-      lowerBound: 0.0,
-      upperBound: 1.0,
     );
 
     _fadeAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
@@ -56,7 +54,7 @@ class _ClientScreenState extends State<ClientScreen>
   }
 
   Future<void> _loadClients() async {
-    setState(() => _loading = true);
+    if (mounted) setState(() => _loading = true);
 
     try {
       final clients = await db.getClients();
@@ -68,7 +66,10 @@ class _ClientScreenState extends State<ClientScreen>
         _loading = false;
       });
 
-      _animationController.forward();
+      // Start animation only if widget is still mounted
+      if (mounted) {
+        _animationController.forward();
+      }
     } catch (e) {
       if (mounted) {
         setState(() => _loading = false);
@@ -79,14 +80,16 @@ class _ClientScreenState extends State<ClientScreen>
 
   void _filterClients() {
     final query = _searchController.text.toLowerCase().trim();
-    setState(() {
-      _filteredClients = _clients.where((client) {
-        return query.isEmpty ||
-            client.name.toLowerCase().contains(query) ||
-            client.phone.contains(query) ||
-            client.address.toLowerCase().contains(query);
-      }).toList();
-    });
+    if (mounted) {
+      setState(() {
+        _filteredClients = _clients.where((client) {
+          return query.isEmpty ||
+              client.name.toLowerCase().contains(query) ||
+              client.phone.contains(query) ||
+              client.address.toLowerCase().contains(query);
+        }).toList();
+      });
+    }
   }
 
   Future<void> _deleteClient(int id, String name) async {
@@ -147,7 +150,7 @@ class _ClientScreenState extends State<ClientScreen>
   }
 
   Future<void> _showAddEditDialog({Client? client}) async {
-    final isEditing = client != null;
+    if (!mounted) return;
 
     Navigator.of(context).push(
       PageRouteBuilder(
@@ -255,6 +258,7 @@ class _ClientScreenState extends State<ClientScreen>
             ),
           ),
           onPressed: () {
+            if (!mounted) return;
             setState(() {
               _isSearching = !_isSearching;
               if (!_isSearching) {
@@ -280,10 +284,12 @@ class _ClientScreenState extends State<ClientScreen>
               duration: Duration(milliseconds: 300 + (index * 100)),
               curve: Curves.easeOutBack,
               builder: (context, value, child) {
+                // ✅ FIX: Clamp the opacity value to prevent errors
+                final clampedValue = value.clamp(0.0, 1.0);
                 return Transform.translate(
-                  offset: Offset(0, 50 * (1 - value)),
+                  offset: Offset(0, 50 * (1 - clampedValue)),
                   child: Opacity(
-                    opacity: value,
+                    opacity: clampedValue, // ✅ Use clamped value
                     child: Container(
                       margin: const EdgeInsets.only(bottom: 12),
                       child: _buildClientCard(client),
@@ -462,6 +468,8 @@ class _ClientScreenState extends State<ClientScreen>
   }
 
   void _navigateToLedger(Client client) {
+    if (!mounted) return;
+
     Navigator.push(
       context,
       PageRouteBuilder(
@@ -493,8 +501,10 @@ class _ClientScreenState extends State<ClientScreen>
             duration: const Duration(milliseconds: 800),
             curve: Curves.elasticOut,
             builder: (context, value, child) {
+              // ✅ FIX: Clamp the scale value
+              final clampedValue = value.clamp(0.0, 1.0);
               return Transform.scale(
-                scale: value,
+                scale: clampedValue,
                 child: Container(
                   width: 120,
                   height: 120,
@@ -564,6 +574,8 @@ class _ClientScreenState extends State<ClientScreen>
   }
 
   void _showSnackBar(String message, {bool success = true}) {
+    if (!mounted) return;
+
     final color = success ? Colors.green : Colors.red;
     final icon = success ? Icons.check_circle : Icons.error;
     ScaffoldMessenger.of(context).showSnackBar(
@@ -641,6 +653,8 @@ class _AddEditClientScreenState extends State<_AddEditClientScreen>
   }
 
   void _onChange() {
+    if (!mounted) return;
+
     final hasChanges = _isEditing
         ? (_nameController.text != (widget.client?.name ?? '') ||
         _phoneController.text != (widget.client?.phone ?? '') ||

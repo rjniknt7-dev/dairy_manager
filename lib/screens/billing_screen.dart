@@ -1,4 +1,4 @@
-// lib/screens/billing_screen.dart - FIXED VERSION
+// lib/screens/billing_screen.dart - COMPACT FIXED VERSION
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
@@ -13,14 +13,14 @@ import 'history_screen.dart';
 
 class BillingScreen extends StatefulWidget {
   final Bill? existingBill;
-  const BillingScreen({super.key, this.existingBill});
+  const BillingScreen({Key? key, this.existingBill}) : super(key: key);
 
   @override
   State<BillingScreen> createState() => _BillingScreenState();
 }
 
 class _BillingScreenState extends State<BillingScreen>
-    with TickerProviderStateMixin {
+    with SingleTickerProviderStateMixin {
   final db = DatabaseHelper();
   final invoiceService = InvoiceService();
   final _currencyFormat = NumberFormat.currency(symbol: '₹', decimalDigits: 2);
@@ -36,14 +36,8 @@ class _BillingScreenState extends State<BillingScreen>
   bool _saving = false;
   bool _isLoading = true;
 
-  // Animation controllers
-  late AnimationController _slideController;
-  late AnimationController _fadeController;
-  late AnimationController _fabController;
-
-  late Animation<Offset> _slideAnimation;
+  late AnimationController _animationController;
   late Animation<double> _fadeAnimation;
-  late Animation<double> _fabAnimation;
 
   double get totalAmount =>
       items.fold(0.0, (sum, it) => sum + it.price * it.quantity);
@@ -56,43 +50,24 @@ class _BillingScreenState extends State<BillingScreen>
   }
 
   void _initializeAnimations() {
-    _slideController = AnimationController(
+    _animationController = AnimationController(
       duration: const Duration(milliseconds: 600),
       vsync: this,
     );
-    _fadeController = AnimationController(
-      duration: const Duration(milliseconds: 800),
-      vsync: this,
-    );
-    _fabController = AnimationController(
-      duration: const Duration(milliseconds: 400),
-      vsync: this,
-    );
-
-    _slideAnimation = Tween<Offset>(
-      begin: const Offset(0, 0.3),
-      end: Offset.zero,
-    ).animate(CurvedAnimation(parent: _slideController, curve: Curves.easeOut));
 
     _fadeAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
-      CurvedAnimation(parent: _fadeController, curve: Curves.easeOut),
-    );
-
-    _fabAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
-      CurvedAnimation(parent: _fabController, curve: Curves.elasticOut),
+      CurvedAnimation(parent: _animationController, curve: Curves.easeOut),
     );
   }
 
   @override
   void dispose() {
-    _slideController.dispose();
-    _fadeController.dispose();
-    _fabController.dispose();
+    _animationController.dispose();
     super.dispose();
   }
 
   Future<void> _loadData() async {
-    setState(() => _isLoading = true);
+    if (mounted) setState(() => _isLoading = true);
 
     try {
       final loadedClients = await db.getClients();
@@ -118,15 +93,11 @@ class _BillingScreenState extends State<BillingScreen>
           _isLoading = false;
         });
 
-        _fadeController.forward();
-        _slideController.forward();
-        Future.delayed(const Duration(milliseconds: 300), () {
-          if (mounted) _fabController.forward();
-        });
+        _animationController.forward();
       }
     } catch (e) {
       if (mounted) setState(() => _isLoading = false);
-      _showErrorSnackBar('Failed to load data: $e');
+      _showSnackBar('Failed to load data: $e', success: false);
     }
   }
 
@@ -141,15 +112,15 @@ class _BillingScreenState extends State<BillingScreen>
   Future<void> _saveBill() async {
     if (_saving) return;
     if (selectedClientId == null) {
-      _showErrorSnackBar("Please select a client");
+      _showSnackBar("Please select a client", success: false);
       return;
     }
     if (items.isEmpty) {
-      _showErrorSnackBar("Add at least one product");
+      _showSnackBar("Add at least one product", success: false);
       return;
     }
     if (!_hasSufficientStock()) {
-      _showErrorSnackBar("Insufficient stock for some items");
+      _showSnackBar("Insufficient stock for some items", success: false);
       return;
     }
 
@@ -177,9 +148,9 @@ class _BillingScreenState extends State<BillingScreen>
 
       try {
         await FirebaseSyncService().syncBills();
-        _showSuccessSnackBar('Bill saved and synced successfully');
+        _showSnackBar('Bill saved and synced successfully');
       } catch (_) {
-        _showWarningSnackBar('Bill saved locally. Will sync when online.');
+        _showSnackBar('Bill saved locally. Will sync when online.', success: false);
       }
 
       HapticFeedback.lightImpact();
@@ -192,7 +163,7 @@ class _BillingScreenState extends State<BillingScreen>
         });
       }
     } catch (e) {
-      _showErrorSnackBar('Error saving bill: $e');
+      _showSnackBar('Error saving bill: $e', success: false);
     } finally {
       if (mounted) setState(() => _saving = false);
     }
@@ -202,22 +173,15 @@ class _BillingScreenState extends State<BillingScreen>
     return await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        title: Row(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Row(
           children: [
-            Container(
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color: Colors.orange.withOpacity(0.1),
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: const Icon(Icons.update, color: Colors.orange),
-            ),
-            const SizedBox(width: 12),
-            const Text('Update Bill'),
+            Icon(Icons.update, color: Colors.orange),
+            SizedBox(width: 8),
+            Text('Update Bill'),
           ],
         ),
-        content: const Text('This will overwrite the existing bill. Do you want to continue?'),
+        content: const Text('This will overwrite the existing bill. Continue?'),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(false),
@@ -228,7 +192,6 @@ class _BillingScreenState extends State<BillingScreen>
             style: ElevatedButton.styleFrom(
               backgroundColor: Colors.orange,
               foregroundColor: Colors.white,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
             ),
             child: const Text('Update'),
           ),
@@ -246,7 +209,7 @@ class _BillingScreenState extends State<BillingScreen>
         .fold<double>(0, (s, it) => s + it.quantity);
 
     if (currentQty + 1 > available) {
-      _showWarningSnackBar("Only $available units available for ${prod.name}");
+      _showSnackBar("Only $available units available for ${prod.name}", success: false);
       return;
     }
 
@@ -255,7 +218,6 @@ class _BillingScreenState extends State<BillingScreen>
       if (idx != -1) {
         items[idx] = items[idx].copyWith(quantity: items[idx].quantity + 1);
       } else {
-        // Add new item at the beginning of the list
         items.insert(0, BillItem(
           productId: prod.id!,
           quantity: 1,
@@ -275,7 +237,7 @@ class _BillingScreenState extends State<BillingScreen>
         .fold<double>(0, (s, it) => s + it.quantity);
 
     if (current + 1 > available) {
-      _showWarningSnackBar("Only $available units available");
+      _showSnackBar("Only $available units available", success: false);
       return;
     }
 
@@ -331,7 +293,7 @@ class _BillingScreenState extends State<BillingScreen>
               final available = stockMap[item.productId] ?? 0;
 
               if (newQuantity > available) {
-                _showWarningSnackBar("Only $available units available");
+                _showSnackBar("Only $available units available", success: false);
                 return;
               }
 
@@ -357,470 +319,451 @@ class _BillingScreenState extends State<BillingScreen>
   @override
   Widget build(BuildContext context) {
     if (_isLoading) {
-      return const Scaffold(
-        body: Center(child: CircularProgressIndicator()),
+      return Scaffold(
+        backgroundColor: Colors.grey[50],
+        body: const Center(
+          child: CircularProgressIndicator(),
+        ),
       );
     }
 
     return Scaffold(
       backgroundColor: Colors.grey[50],
-      body: Column(
-        children: [
-          // Fixed header with slim padding
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-            decoration: const BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: [Colors.indigo, Color(0xFF3F51B5)],
-              ),
-            ),
-            child: SafeArea(
-              bottom: false,
-              child: Row(
-                children: [
-                  IconButton(
-                    icon: const Icon(Icons.arrow_back, color: Colors.white, size: 20),
-                    padding: const EdgeInsets.all(4),
-                    onPressed: () => Navigator.pop(context),
+      body: FadeTransition(
+        opacity: _fadeAnimation,
+        child: CustomScrollView(
+          slivers: [
+            // HEADER - COMPACT
+            SliverAppBar(
+              expandedHeight: 80, // REDUCED HEIGHT
+              floating: false,
+              pinned: true,
+              elevation: 0,
+              backgroundColor: Colors.purple,
+              flexibleSpace: FlexibleSpaceBar(
+                title: Text(
+                  widget.existingBill == null ? 'Create Bill' : 'Edit Bill',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 16, // SMALLER FONT
                   ),
-                  const SizedBox(width: 4),
-                  Text(
-                    widget.existingBill == null ? 'Create Bill' : 'Edit Bill',
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
+                ),
+                background: Container(
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                      colors: [Colors.purple.shade600, Colors.purple.shade800],
                     ),
                   ),
-                  const Spacer(),
-                  IconButton(
-                    icon: const Icon(Icons.history, color: Colors.white, size: 20),
-                    padding: const EdgeInsets.all(4),
-                    onPressed: () {
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(builder: (context) => const HistoryScreen()),
-                      );
-                    },
-                  ),
-                ],
-              ),
-            ),
-          ),
-
-          // Content with slim padding
-          Expanded(
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.all(8),
-              child: FadeTransition(
-                opacity: _fadeAnimation,
-                child: SlideTransition(
-                  position: _slideAnimation,
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      if (clients.isEmpty)
-                        _buildEmptyState('No clients found. Add clients first.')
-                      else
-                        _buildClientSelection(),
-
-                      const SizedBox(height: 8),
-
-                      if (products.isEmpty)
-                        _buildEmptyState('No products found. Add products first.')
-                      else
-                        _buildProductSelection(),
-
-                      const SizedBox(height: 8),
-
-                      _buildItemsList(),
-
-                      const SizedBox(height: 12),
-                    ],
-                  ),
                 ),
               ),
-            ),
-          ),
-        ],
-      ),
-      floatingActionButton: ScaleTransition(
-        scale: _fabAnimation,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (items.isNotEmpty && selectedClientId != null) ...[
-              FloatingActionButton(
-                heroTag: 'preview',
-                onPressed: _previewBill,
-                backgroundColor: Colors.orange,
-                mini: true,
-                child: const Icon(Icons.preview, size: 20),
-              ),
-              const SizedBox(height: 8),
-            ],
-            FloatingActionButton.extended(
-              heroTag: 'save',
-              onPressed: _saving ? null : _saveBill,
-              label: Text(
-                _saving ? 'Saving...' : 'Save Bill',
-                style: const TextStyle(fontSize: 14),
-              ),
-              icon: _saving
-                  ? const SizedBox(
-                width: 16,
-                height: 16,
-                child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-              )
-                  : const Icon(Icons.save, size: 18),
-              backgroundColor: Colors.indigo,
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildEmptyState(String message) {
-    return Container(
-      padding: const EdgeInsets.all(8),
-      margin: const EdgeInsets.symmetric(vertical: 2),
-      decoration: BoxDecoration(
-        color: Colors.grey[100],
-        borderRadius: BorderRadius.circular(6),
-      ),
-      child: Text(
-        message,
-        style: TextStyle(
-          color: Colors.grey[700],
-          fontSize: 13,
-        ),
-        textAlign: TextAlign.center,
-      ),
-    );
-  }
-
-  Widget _buildClientSelection() {
-    return Card(
-      elevation: 0,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(12),
-        side: BorderSide(color: Colors.grey.shade200),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Container(
-                  padding: const EdgeInsets.all(6),
-                  decoration: BoxDecoration(
-                    color: Colors.blue.shade50,
-                    borderRadius: BorderRadius.circular(6),
-                  ),
-                  child: Icon(Icons.person, color: Colors.blue.shade600, size: 18),
-                ),
-                const SizedBox(width: 8),
-                const Text(
-                  'Select Client',
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+              actions: [
+                IconButton(
+                  icon: const Icon(Icons.history, color: Colors.white, size: 20),
+                  onPressed: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (context) => const HistoryScreen()),
+                    );
+                  },
                 ),
               ],
             ),
-            const SizedBox(height: 12),
-            Container(
-              constraints: BoxConstraints(
-                maxHeight: 50, // Fixed height to prevent overflow
+
+            if (clients.isEmpty || products.isEmpty) ...[
+              SliverFillRemaining(
+                child: _buildEmptyState(),
               ),
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: Colors.grey.shade300),
-              ),
-              child: DropdownButtonFormField<int>(
-                value: selectedClientId,
-                isExpanded: true, // Important for overflow fix
-                decoration: const InputDecoration(
-                  border: InputBorder.none,
-                  contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                  hintText: 'Choose a client...',
-                ),
-                items: clients.map((client) => DropdownMenuItem<int>(
-                  value: client.id,
-                  child: Container(
-                    constraints: BoxConstraints(
-                      maxWidth: MediaQuery.of(context).size.width * 0.8,
+            ] else ...[
+              _buildContentSlivers(),
+            ],
+          ],
+        ),
+      ),
+      floatingActionButton: _buildFloatingActionButton(),
+    );
+  }
+
+  Widget _buildContentSlivers() {
+    return SliverList(
+      delegate: SliverChildListDelegate([
+        const SizedBox(height: 8), // REDUCED SPACING
+        _buildClientSelection(),
+        const SizedBox(height: 8), // REDUCED SPACING
+        _buildProductSelection(),
+        const SizedBox(height: 8), // REDUCED SPACING
+        _buildItemsList(),
+        const SizedBox(height: 80), // Space for FAB
+      ]),
+    );
+  }
+
+  Widget _buildEmptyState() {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(
+            Icons.receipt_long,
+            size: 60,
+            color: Colors.grey.shade400,
+          ),
+          const SizedBox(height: 12),
+          Text(
+            clients.isEmpty ? 'No clients found' : 'No products found',
+            style: const TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.bold,
+              color: Colors.grey,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            clients.isEmpty
+                ? 'Add clients first to create bills'
+                : 'Add products first to create bills',
+            style: TextStyle(
+              fontSize: 12,
+              color: Colors.grey.shade600,
+            ),
+            textAlign: TextAlign.center,
+          ),
+        ],
+      ),
+    );
+  }
+
+  // REPLACE ONLY THESE METHODS IN YOUR BILLING SCREEN:
+
+  // REPLACE ONLY THESE METHODS IN YOUR BILLING SCREEN:
+
+  Widget _buildClientSelection() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 12),
+      child: Card(
+        elevation: 1,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(6),
+                    decoration: BoxDecoration(
+                      color: Colors.blue.shade50,
+                      borderRadius: BorderRadius.circular(6),
                     ),
-                    child: Row(
-                      children: [
-                        CircleAvatar(
-                          radius: 14,
-                          backgroundColor: Colors.blue.shade100,
-                          child: Text(
-                            client.name.isNotEmpty
-                                ? client.name[0].toUpperCase()
-                                : 'C',
-                            style: TextStyle(
-                              color: Colors.blue.shade800,
-                              fontWeight: FontWeight.bold,
-                              fontSize: 12,
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Column(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Text(
-                                client.name,
-                                style: const TextStyle(
-                                  fontWeight: FontWeight.w600,
-                                  fontSize: 14,
-                                ),
-                                overflow: TextOverflow.ellipsis,
-                                maxLines: 1,
-                              ),
-                              Text(
-                                client.phone,
-                                style: TextStyle(
-                                  color: Colors.grey[600],
-                                  fontSize: 11,
-                                ),
-                                overflow: TextOverflow.ellipsis,
-                                maxLines: 1,
-                              ),
-                            ],
-                          ),
-                        ),
-                      ],
+                    child: Icon(Icons.person, color: Colors.blue.shade600, size: 18),
+                  ),
+                  const SizedBox(width: 8),
+                  const Text(
+                    'Select Client',
+                    style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
                     ),
                   ),
-                )).toList(),
-                onChanged: (id) => setState(() => selectedClientId = id),
+                ],
               ),
-            ),
-          ],
+              const SizedBox(height: 8),
+              Container(
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.grey.shade300),
+                ),
+                child: DropdownButtonFormField<int>(
+                  value: selectedClientId,
+                  isExpanded: true,
+                  decoration: const InputDecoration(
+                    border: InputBorder.none,
+                    contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                    hintText: 'Choose client...',
+                  ),
+                  items: clients.map((client) => DropdownMenuItem<int>(
+                    value: client.id,
+                    child: Container(
+                      height: 40, // Fixed height
+                      alignment: Alignment.centerLeft,
+                      child: Row(
+                        children: [
+                          CircleAvatar(
+                            radius: 14,
+                            backgroundColor: Colors.blue.shade100,
+                            child: Text(
+                              client.name.isNotEmpty ? client.name[0].toUpperCase() : 'C',
+                              style: TextStyle(
+                                color: Colors.blue.shade800,
+                                fontWeight: FontWeight.bold,
+                                fontSize: 12,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          // SINGLE LINE - NO COLUMN
+                          Expanded(
+                            child: Text.rich(
+                              TextSpan(
+                                children: [
+                                  TextSpan(
+                                    text: client.name,
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.w600,
+                                      fontSize: 14,
+                                    ),
+                                  ),
+                                  TextSpan(
+                                    text: ' • ${client.phone}',
+                                    style: TextStyle(
+                                      color: Colors.grey.shade600,
+                                      fontSize: 11,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              overflow: TextOverflow.ellipsis,
+                              maxLines: 1,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  )).toList(),
+                  onChanged: (id) => setState(() => selectedClientId = id),
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
   }
 
   Widget _buildProductSelection() {
-    return Card(
-      elevation: 0,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(12),
-        side: BorderSide(color: Colors.grey.shade200),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Container(
-                  padding: const EdgeInsets.all(6),
-                  decoration: BoxDecoration(
-                    color: Colors.green.shade50,
-                    borderRadius: BorderRadius.circular(6),
-                  ),
-                  child: Icon(Icons.inventory_2,
-                      color: Colors.green.shade600, size: 18),
-                ),
-                const SizedBox(width: 8),
-                const Text(
-                  'Add Products',
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                ),
-              ],
-            ),
-            const SizedBox(height: 12),
-            Container(
-              constraints: const BoxConstraints(maxHeight: 50),
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: Colors.grey.shade300),
-              ),
-              child: DropdownButtonFormField<int>(
-                value: selectedProductId,
-                isExpanded: true, // fixes overflow
-                decoration: const InputDecoration(
-                  border: InputBorder.none,
-                  contentPadding:
-                  EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-                  hintText: 'Choose a product to add...',
-                ),
-                items: products.map((product) {
-                  final stock = stockMap[product.id] ?? 0;
-                  final existingItem = items.firstWhere(
-                        (item) => item.productId == product.id,
-                    orElse: () =>
-                        BillItem(productId: -1, quantity: 0, price: 0),
-                  );
-                  final hasItem = existingItem.productId != -1;
-
-                  return DropdownMenuItem<int>(
-                    value: product.id,
-                    child: Row(
-                      children: [
-                        Container(
-                          width: 8,
-                          height: 8,
-                          margin: const EdgeInsets.only(right: 8),
-                          decoration: BoxDecoration(
-                            shape: BoxShape.circle,
-                            color: stock > 0 ? Colors.green : Colors.red,
-                          ),
-                        ),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Text(
-                                product.name,
-                                style: const TextStyle(
-                                    fontWeight: FontWeight.w600, fontSize: 14),
-                                overflow: TextOverflow.ellipsis,
-                                maxLines: 1,
-                              ),
-                              Text(
-                                '${_currencyFormat.format(product.price)} • Stock: $stock',
-                                style: TextStyle(
-                                  color: Colors.grey[600],
-                                  fontSize: 11,
-                                ),
-                                overflow: TextOverflow.ellipsis,
-                                maxLines: 1,
-                              ),
-                            ],
-                          ),
-                        ),
-                        if (hasItem)
-                          Row(
-                            children: [
-                              // Decrease button
-                              IconButton(
-                                icon: const Icon(Icons.remove,
-                                    size: 16, color: Colors.red),
-                                padding: EdgeInsets.zero,
-                                constraints: const BoxConstraints(),
-                                onPressed: () => _decreaseQuantity(existingItem),
-                              ),
-                              // Qty display
-                              Text(
-                                '${existingItem.quantity.toInt()}',
-                                style: TextStyle(
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.bold,
-                                  color: Colors.blue.shade700,
-                                ),
-                              ),
-                              // Increase button
-                              IconButton(
-                                icon: const Icon(Icons.add,
-                                    size: 16, color: Colors.green),
-                                padding: EdgeInsets.zero,
-                                constraints: const BoxConstraints(),
-                                onPressed: () => _increaseQuantity(existingItem),
-                              ),
-                            ],
-                          ),
-                      ],
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 12),
+      child: Card(
+        elevation: 1,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(6),
+                    decoration: BoxDecoration(
+                      color: Colors.green.shade50,
+                      borderRadius: BorderRadius.circular(6),
                     ),
-                  );
-                }).toList(),
-                onChanged: (pid) {
-                  if (pid != null) _addOrIncrementProductById(pid);
-                },
+                    child: Icon(Icons.inventory_2, color: Colors.green.shade600, size: 18),
+                  ),
+                  const SizedBox(width: 8),
+                  const Text(
+                    'Add Products',
+                    style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ],
               ),
-            ),
-          ],
+              const SizedBox(height: 8),
+              Container(
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.grey.shade300),
+                ),
+                child: DropdownButtonFormField<int>(
+                  value: selectedProductId,
+                  isExpanded: true,
+                  decoration: const InputDecoration(
+                    border: InputBorder.none,
+                    contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                    hintText: 'Choose product...',
+                  ),
+                  items: products.map((product) {
+                    final stock = stockMap[product.id] ?? 0;
+                    final existingItem = items.firstWhere(
+                          (item) => item.productId == product.id,
+                      orElse: () => BillItem(productId: -1, quantity: 0, price: 0),
+                    );
+                    final hasItem = existingItem.productId != -1;
+
+                    return DropdownMenuItem<int>(
+                      value: product.id,
+                      child: Container(
+                        height: 40, // Fixed height
+                        alignment: Alignment.centerLeft,
+                        child: Row(
+                          children: [
+                            Container(
+                              width: 6,
+                              height: 6,
+                              margin: const EdgeInsets.only(right: 8),
+                              decoration: BoxDecoration(
+                                shape: BoxShape.circle,
+                                color: stock > 0 ? Colors.green : Colors.red,
+                              ),
+                            ),
+                            // SINGLE LINE - NO COLUMN
+                            Expanded(
+                              child: Text.rich(
+                                TextSpan(
+                                  children: [
+                                    TextSpan(
+                                      text: product.name,
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.w600,
+                                        fontSize: 14,
+                                      ),
+                                    ),
+                                    TextSpan(
+                                      text: ' • ${_currencyFormat.format(product.price)} • Stock: $stock',
+                                      style: TextStyle(
+                                        color: Colors.grey.shade600,
+                                        fontSize: 11,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                overflow: TextOverflow.ellipsis,
+                                maxLines: 1,
+                              ),
+                            ),
+                            if (hasItem)
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                decoration: BoxDecoration(
+                                  color: Colors.blue.shade50,
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                child: Text(
+                                  '${existingItem.quantity.toInt()}',
+                                  style: TextStyle(
+                                    color: Colors.blue.shade700,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 12,
+                                  ),
+                                ),
+                              ),
+                          ],
+                        ),
+                      ),
+                    );
+                  }).toList(),
+                  onChanged: (pid) {
+                    if (pid != null) _addOrIncrementProductById(pid);
+                  },
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
   }
-
   Widget _buildItemsList() {
-    return Card(
-      elevation: 1,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(8),
-        side: BorderSide(color: Colors.grey.shade200),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.all(8),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                const Text(
-                  'Bill Items',
-                  style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
-                ),
-                const Spacer(),
-                if (items.isNotEmpty)
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 12),
+      child: Card(
+        elevation: 1,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                children: [
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    padding: const EdgeInsets.all(6),
                     decoration: BoxDecoration(
-                      color: Colors.blue.shade50,
-                      borderRadius: BorderRadius.circular(8),
+                      color: Colors.orange.shade50,
+                      borderRadius: BorderRadius.circular(6),
                     ),
-                    child: Text(
-                      '${items.length} items',
-                      style: TextStyle(
-                        color: Colors.blue.shade700,
-                        fontWeight: FontWeight.w600,
-                        fontSize: 11,
+                    child: Icon(Icons.shopping_cart, color: Colors.orange.shade600, size: 18),
+                  ),
+                  const SizedBox(width: 8),
+                  const Text(
+                    'Bill Items',
+                    style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  const Spacer(),
+                  if (items.isNotEmpty)
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: Colors.blue.shade50,
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Text(
+                        '${items.length} items',
+                        style: TextStyle(
+                          color: Colors.blue.shade700,
+                          fontWeight: FontWeight.w600,
+                          fontSize: 12,
+                        ),
                       ),
                     ),
-                  ),
-              ],
-            ),
-            const SizedBox(height: 8),
-
-            // TOTAL AMOUNT ABOVE ITEMS
-            if (items.isNotEmpty) ...[
-              _buildTotalSection(),
-              const SizedBox(height: 12),
-              const Divider(thickness: 0.5, height: 1),
+                ],
+              ),
               const SizedBox(height: 8),
-            ],
 
-            if (items.isEmpty)
-              _buildEmptyItemsState()
-            else
-              ..._buildItemsListContent(),
-          ],
+              if (items.isEmpty)
+                _buildEmptyItemsState()
+              else
+                ..._buildItemsListContent(),
+            ],
+          ),
         ),
       ),
     );
   }
+
+
 
   Widget _buildEmptyItemsState() {
     return Container(
       padding: const EdgeInsets.all(16),
       child: Column(
+        mainAxisSize: MainAxisSize.min, // IMPORTANT: Makes column compact
         children: [
-          Icon(Icons.shopping_cart_outlined, size: 36, color: Colors.grey[400]),
+          Icon(Icons.shopping_cart_outlined, size: 36, color: Colors.grey.shade400),
           const SizedBox(height: 8),
-          Text(
+          const Text(
             'No items added yet',
-            style: TextStyle(fontSize: 14, color: Colors.grey[600]),
+            style: TextStyle(
+              fontSize: 14,
+              color: Colors.grey,
+              fontWeight: FontWeight.w600,
+            ),
           ),
           const SizedBox(height: 2),
           Text(
-            'Select products above to add them to the bill',
-            style: TextStyle(fontSize: 12, color: Colors.grey[500]),
+            'Select products above to add them',
+            style: TextStyle(
+              fontSize: 11,
+              color: Colors.grey.shade600,
+            ),
             textAlign: TextAlign.center,
           ),
         ],
@@ -830,12 +773,35 @@ class _BillingScreenState extends State<BillingScreen>
 
   List<Widget> _buildItemsListContent() {
     return [
-      // Items will be added from top (newest first)
-      ...items.map((item) {
+      // TOTAL AMOUNT ABOVE ITEMS
+      if (items.isNotEmpty) ...[
+        _buildTotalSection(),
+        const SizedBox(height: 12),
+      ],
+
+      // Items list
+      ...items.asMap().entries.map((entry) {
+        final index = entry.key;
+        final item = entry.value;
         final product = products.firstWhere((p) => p.id == item.productId);
-        return Container(
-          margin: const EdgeInsets.only(bottom: 6),
-          child: _buildBillItemCard(item, product),
+
+        return TweenAnimationBuilder<double>(
+          tween: Tween(begin: 0.0, end: 1.0),
+          duration: Duration(milliseconds: 200 + (index * 50)),
+          curve: Curves.easeOut,
+          builder: (context, value, child) {
+            final clampedValue = value.clamp(0.0, 1.0);
+            return Transform.translate(
+              offset: Offset(0, 30 * (1 - clampedValue)),
+              child: Opacity(
+                opacity: clampedValue,
+                child: Container(
+                  margin: const EdgeInsets.only(bottom: 6),
+                  child: _buildBillItemCard(item, product),
+                ),
+              ),
+            );
+          },
         );
       }),
     ];
@@ -844,168 +810,152 @@ class _BillingScreenState extends State<BillingScreen>
   Widget _buildBillItemCard(BillItem item, Product product) {
     final stock = stockMap[product.id] ?? 0;
 
-    return Container(
-      padding: const EdgeInsets.all(8),
-      decoration: BoxDecoration(
-        color: Colors.grey.shade50,
-        borderRadius: BorderRadius.circular(6),
-        border: Border.all(color: Colors.grey.shade200),
+    return Card(
+      elevation: 0,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(8),
+        side: BorderSide(color: Colors.grey.shade200),
       ),
-      child: Row(
-        children: [
-          // Product Info on LEFT side
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    CircleAvatar(
-                      radius: 16,
-                      backgroundColor: Colors.blue.shade100,
-                      child: Text(
-                        product.name[0].toUpperCase(),
+      child: Padding(
+        padding: const EdgeInsets.all(8),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            // Product info (expands nicely)
+            Expanded(
+              flex: 2,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // Product name
+                  Text(
+                    product.name,
+                    style: const TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.bold,
+                    ),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  const SizedBox(height: 2),
+
+                  // Stock info only
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(Icons.inventory_2_outlined,
+                          size: 12, color: Colors.green),
+                      const SizedBox(width: 4),
+                      Text(
+                        'Stock: $stock',
                         style: TextStyle(
-                          color: Colors.blue.shade800,
-                          fontWeight: FontWeight.bold,
-                          fontSize: 12,
+                          color: Colors.grey.shade700,
+                          fontSize: 11,
                         ),
+                        overflow: TextOverflow.ellipsis,
                       ),
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            product.name,
-                            style: const TextStyle(
-                              fontSize: 14,
-                              fontWeight: FontWeight.w600,
-                            ),
-                            overflow: TextOverflow.ellipsis,
-                            maxLines: 1,
-                          ),
-                          Text(
-                            '${_currencyFormat.format(item.price)} • Stock: $stock',
-                            style: TextStyle(
-                              color: Colors.grey[600],
-                              fontSize: 11,
-                            ),
-                            overflow: TextOverflow.ellipsis,
-                            maxLines: 1,
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-              ],
+                    ],
+                  ),
+                ],
+              ),
             ),
-          ),
 
-          // Quantity Controls on RIGHT side
-          Column(
-            children: [
-              // Quantity display and controls
-              Container(
-                padding: const EdgeInsets.all(4),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(6),
-                  border: Border.all(color: Colors.grey.shade300),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    // Remove button
-                    IconButton(
-                      onPressed: () => _removeItem(item),
-                      icon: const Icon(Icons.close, color: Colors.red, size: 16),
-                      padding: const EdgeInsets.all(2),
-                      constraints: const BoxConstraints(minWidth: 24, minHeight: 24),
-                    ),
+            const SizedBox(width: 8),
 
-                    // Quantity display
-                    GestureDetector(
-                      onTap: () => _editQuantityWithKeyboard(item),
-                      child: Container(
-                        width: 40,
-                        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
-                        child: Text(
-                          '${item.quantity.toInt()}',
-                          textAlign: TextAlign.center,
-                          style: const TextStyle(
-                            fontSize: 14,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ),
-                    ),
+            // Quantity Controls (smartly shrink or wrap)
+            Flexible(
+              flex: 3,
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  // If space is tight, shrink the buttons
+                  final isTight = constraints.maxWidth < 160;
+                  final iconSize = isTight ? 12.0 : 14.0;
+                  final pad = isTight ? 1.0 : 2.0;
 
-                    // Quantity controls
-                    Column(
+                  return FittedBox(
+                    fit: BoxFit.scaleDown,
+                    child: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        // Increase button
-                        GestureDetector(
-                          onTap: () => _increaseQuantity(item),
-                          child: Container(
-                            padding: const EdgeInsets.all(2),
-                            decoration: BoxDecoration(
-                              color: Colors.green.shade50,
-                              borderRadius: const BorderRadius.only(
-                                topRight: Radius.circular(4),
-                              ),
-                            ),
-                            child: const Icon(Icons.add, size: 12, color: Colors.green),
+                        IconButton(
+                          onPressed: () => _removeItem(item),
+                          icon: Icon(Icons.close,
+                              size: iconSize, color: Colors.red),
+                          padding: EdgeInsets.all(pad),
+                          constraints:
+                          const BoxConstraints(minWidth: 28, minHeight: 28),
+                        ),
+
+                        IconButton(
+                          onPressed: () => _decreaseQuantity(item),
+                          icon: Icon(Icons.remove, size: iconSize),
+                          padding: EdgeInsets.all(pad),
+                          constraints:
+                          const BoxConstraints(minWidth: 28, minHeight: 28),
+                          style: IconButton.styleFrom(
+                            backgroundColor: Colors.red.shade50,
+                            foregroundColor: Colors.red,
                           ),
                         ),
-                        // Decrease button
-                        GestureDetector(
-                          onTap: () => _decreaseQuantity(item),
-                          child: Container(
-                            padding: const EdgeInsets.all(2),
-                            decoration: BoxDecoration(
-                              color: Colors.red.shade50,
-                              borderRadius: const BorderRadius.only(
-                                bottomRight: Radius.circular(4),
-                              ),
+
+                        Container(
+                          width: 36,
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 4, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(4),
+                            border: Border.all(color: Colors.grey.shade300),
+                          ),
+                          child: Text(
+                            '${item.quantity.toInt()}',
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.bold,
                             ),
-                            child: const Icon(Icons.remove, size: 12, color: Colors.red),
+                          ),
+                        ),
+
+                        IconButton(
+                          onPressed: () => _increaseQuantity(item),
+                          icon: Icon(Icons.add, size: iconSize),
+                          padding: EdgeInsets.all(pad),
+                          constraints:
+                          const BoxConstraints(minWidth: 28, minHeight: 28),
+                          style: IconButton.styleFrom(
+                            backgroundColor: Colors.green.shade50,
+                            foregroundColor: Colors.green,
                           ),
                         ),
                       ],
                     ),
-                  ],
-                ),
+                  );
+                },
               ),
-
-              // Total price for this item
-              const SizedBox(height: 4),
-              Text(
-                _currencyFormat.format(item.price * item.quantity),
-                style: const TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.indigo,
-                ),
-              ),
-            ],
-          ),
-        ],
+            ),
+          ],
+        ),
       ),
     );
   }
 
+
+
+
+
+
+// Remove the total section from the bottom of _buildItemsList()
+// The total will now be displayed above the items
+
   Widget _buildTotalSection() {
     return Container(
-      padding: const EdgeInsets.all(12),
+      padding: const EdgeInsets.all(12), // COMPACT
       decoration: BoxDecoration(
         gradient: LinearGradient(
-          colors: [Colors.indigo.shade50, Colors.indigo.shade100],
+          colors: [Colors.purple.shade50, Colors.purple.shade100],
         ),
-        borderRadius: BorderRadius.circular(6),
+        borderRadius: BorderRadius.circular(8),
       ),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -1013,16 +963,16 @@ class _BillingScreenState extends State<BillingScreen>
           const Text(
             'Total Amount',
             style: TextStyle(
-              fontSize: 16,
+              fontSize: 16, // SMALLER
               fontWeight: FontWeight.bold,
             ),
           ),
           Text(
             _currencyFormat.format(totalAmount),
             style: const TextStyle(
-              fontSize: 16,
+              fontSize: 16, // SMALLER
               fontWeight: FontWeight.bold,
-              color: Colors.indigo,
+              color: Colors.purple,
             ),
           ),
         ],
@@ -1030,60 +980,37 @@ class _BillingScreenState extends State<BillingScreen>
     );
   }
 
+  Widget _buildFloatingActionButton() {
+    return FloatingActionButton.extended(
+      onPressed: _saving ? null : _saveBill,
+      icon: _saving
+          ? const SizedBox(
+        width: 16,
+        height: 16,
+        child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+      )
+          : const Icon(Icons.save, size: 20),
+      label: Text(_saving ? 'Saving...' : 'Save Bill', style: const TextStyle(fontSize: 14)),
+      backgroundColor: Colors.purple,
+      foregroundColor: Colors.white,
+    );
+  }
+
   Future<void> _previewBill() async {
-    if (selectedClientId == null || items.isEmpty) return;
-
-    try {
-      final client = clients.firstWhere((c) => c.id == selectedClientId);
-      final billItems = items.map((item) {
-        final product = products.firstWhere((p) => p.id == item.productId);
-        return {
-          'name': product.name,
-          'qty': item.quantity,
-          'price': item.price,
-        };
-      }).toList();
-
-      final pdfBytes = await invoiceService.buildPdf(
-        customerName: client.name,
-        invoiceNo: 'DRAFT-${DateTime.now().millisecondsSinceEpoch}',
-        date: DateTime.now(),
-        items: billItems,
-        receivedAmount: 0,
-      );
-
-      _showSuccessSnackBar('Bill preview generated successfully');
-    } catch (e) {
-      _showErrorSnackBar('Failed to generate preview: $e');
-    }
+    // Preview functionality can be added later
   }
 
-  void _showSuccessSnackBar(String message) {
+  void _showSnackBar(String message, {bool success = true}) {
+    if (!mounted) return;
+
+    final color = success ? Colors.green : Colors.red;
+
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(message),
-        backgroundColor: Colors.green,
+        backgroundColor: color,
         behavior: SnackBarBehavior.floating,
-      ),
-    );
-  }
-
-  void _showErrorSnackBar(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(message),
-        backgroundColor: Colors.red,
-        behavior: SnackBarBehavior.floating,
-      ),
-    );
-  }
-
-  void _showWarningSnackBar(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(message),
-        backgroundColor: Colors.orange,
-        behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 2),
       ),
     );
   }

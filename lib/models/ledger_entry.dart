@@ -1,146 +1,138 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:uuid/uuid.dart';
 
 class LedgerEntry {
-  final int? id;              // Local SQLite ID
-  final int clientId;         // Local client ID
-  final int? billId;          // Nullable: link to a bill if applicable
-  final String type;          // 'bill' or 'payment'
+  final int? id;
+  final String firestoreId;
+  final int clientId;
+  final int? billId;
+  final String type;
   final double amount;
   final DateTime date;
   final String? note;
-  final String? firestoreId;  // Firestore document ID
-  final DateTime? updatedAt;  // Last update time in Firestore
-  final bool isSynced;        // Tracks if this row is already synced
+  final DateTime createdAt;
+  final DateTime updatedAt;
+  final bool isSynced;
+  final bool isDeleted;
 
-  const LedgerEntry({
+  LedgerEntry({
     this.id,
+    String? firestoreId,
     required this.clientId,
     this.billId,
     required this.type,
     required this.amount,
     required this.date,
     this.note,
-    this.firestoreId,
-    this.updatedAt,
+    DateTime? createdAt,
+    DateTime? updatedAt,
     this.isSynced = false,
-  });
+    this.isDeleted = false,
+  })  : firestoreId = firestoreId ?? const Uuid().v4(),
+        createdAt = createdAt ?? DateTime.now(),
+        updatedAt = updatedAt ?? DateTime.now();
 
-  /* ------------ Conversions ------------ */
-
-  /// Local SQLite representation
   Map<String, dynamic> toMap() => {
-    'id': id,
-    'clientId': clientId,
-    'billId': billId,
-    'type': type,
-    'amount': amount,
-    'date': date.toIso8601String(),
-    'note': note,
-    'updatedAt': updatedAt?.toIso8601String(),
-    'isSynced': isSynced ? 1 : 0,
+    if (id != null) 'id': id,
     'firestoreId': firestoreId,
-  };
-
-  /// Firestore representation
-  Map<String, dynamic> toFirestore() => {
-    'id': id,
     'clientId': clientId,
     'billId': billId,
     'type': type,
     'amount': amount,
     'date': date.toIso8601String(),
     'note': note,
-    'updatedAt': FieldValue.serverTimestamp(),
+    'updatedAt': updatedAt.toIso8601String(),
+    'isSynced': isSynced ? 1 : 0,
+    'isDeleted': isDeleted ? 1 : 0,
   };
 
-  /// From Firestore document
+  Map<String, dynamic> toFirestore() => {
+    'clientId': clientId,
+    'billId': billId,
+    'type': type,
+    'amount': amount,
+    'date': date.toIso8601String(),
+    'note': note,
+    'createdAt': Timestamp.fromDate(createdAt),
+    'updatedAt': Timestamp.fromDate(updatedAt),
+  };
+
   factory LedgerEntry.fromFirestore(DocumentSnapshot doc) {
     final data = doc.data() as Map<String, dynamic>? ?? {};
     return LedgerEntry(
       firestoreId: doc.id,
       id: data['id'] as int?,
       clientId: (data['clientId'] ?? 0) as int,
-      billId: data['billId'] is int ? data['billId'] as int? : null,
+      billId: data['billId'] as int?,
       type: (data['type'] ?? '') as String,
       amount: (data['amount'] as num?)?.toDouble() ?? 0.0,
-      date: DateTime.tryParse(data['date'] as String? ?? '') ?? DateTime.now(),
+      date: DateTime.parse(data['date'] as String? ?? DateTime.now().toIso8601String()),
       note: data['note'] as String?,
-      updatedAt: data['updatedAt'] is Timestamp
-          ? (data['updatedAt'] as Timestamp).toDate()
-          : null,
+      createdAt: _parseTimestamp(data['createdAt']),
+      updatedAt: _parseTimestamp(data['updatedAt']),
       isSynced: true,
+      isDeleted: false,
     );
   }
 
-  /// From local SQLite row
   factory LedgerEntry.fromMap(Map<String, dynamic> m) => LedgerEntry(
     id: m['id'] as int?,
+    firestoreId: m['firestoreId'] as String?,
     clientId: m['clientId'] as int,
     billId: m['billId'] as int?,
     type: (m['type'] ?? '') as String,
-    amount: (m['amount'] is int)
-        ? (m['amount'] as int).toDouble()
-        : (m['amount'] as num?)?.toDouble() ?? 0.0,
-    date: DateTime.tryParse(m['date'] as String? ?? '') ?? DateTime.now(),
+    amount: (m['amount'] is int) ? (m['amount'] as int).toDouble() : (m['amount'] as num?)?.toDouble() ?? 0.0,
+    date: DateTime.parse(m['date'] as String),
     note: m['note'] as String?,
-    firestoreId: m['firestoreId'] as String?,
-    updatedAt: m['updatedAt'] != null
-        ? DateTime.tryParse(m['updatedAt'].toString())
-        : null,
+    createdAt: m['createdAt'] != null
+        ? DateTime.parse(m['createdAt'] as String)
+        : DateTime.parse(m['updatedAt'] as String),
+    updatedAt: DateTime.parse(m['updatedAt'] as String),
     isSynced: (m['isSynced'] ?? 0) == 1,
+    isDeleted: (m['isDeleted'] ?? 0) == 1,
   );
 
-  /* ------------ Utilities ------------ */
+  static DateTime _parseTimestamp(dynamic value) {
+    if (value is Timestamp) return value.toDate();
+    if (value is String) return DateTime.parse(value);
+    return DateTime.now();
+  }
 
-  /// Create a modified copy
   LedgerEntry copyWith({
     int? id,
+    String? firestoreId,
     int? clientId,
     int? billId,
     String? type,
     double? amount,
     DateTime? date,
     String? note,
-    String? firestoreId,
+    DateTime? createdAt,
     DateTime? updatedAt,
     bool? isSynced,
+    bool? isDeleted,
   }) {
     return LedgerEntry(
       id: id ?? this.id,
+      firestoreId: firestoreId ?? this.firestoreId,
       clientId: clientId ?? this.clientId,
       billId: billId ?? this.billId,
       type: type ?? this.type,
       amount: amount ?? this.amount,
       date: date ?? this.date,
       note: note ?? this.note,
-      firestoreId: firestoreId ?? this.firestoreId,
+      createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
       isSynced: isSynced ?? this.isSynced,
+      isDeleted: isDeleted ?? this.isDeleted,
     );
   }
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
-          other is LedgerEntry &&
-              runtimeType == other.runtimeType &&
-              id == other.id &&
-              clientId == other.clientId &&
-              billId == other.billId &&
-              type == other.type &&
-              amount == other.amount &&
-              date == other.date &&
-              note == other.note &&
-              firestoreId == other.firestoreId;
+          other is LedgerEntry && runtimeType == other.runtimeType && firestoreId == other.firestoreId;
 
   @override
-  int get hashCode =>
-      id.hashCode ^
-      clientId.hashCode ^
-      (billId?.hashCode ?? 0) ^
-      type.hashCode ^
-      amount.hashCode ^
-      date.hashCode ^
-      (note?.hashCode ?? 0) ^
-      (firestoreId?.hashCode ?? 0);
+  int get hashCode => firestoreId.hashCode;
 }

@@ -1,14 +1,14 @@
 // lib/services/database_helper.dart
+// COMPLETE DATABASE HELPER - PRODUCTION READY
+
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
-import 'package:path_provider/path_provider.dart';
 import 'dart:io';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
-import 'package:sqflite/sqflite.dart'as sqflite;
 import '../models/client.dart';
 import '../models/product.dart';
 import '../models/bill.dart';
@@ -31,7 +31,6 @@ class DatabaseHelper {
     return _db!;
   }
 
-  // Firebase helpers
   String? get _uid => FirebaseAuth.instance.currentUser?.uid;
 
   CollectionReference<Map<String, dynamic>>? _col(String name) {
@@ -55,7 +54,7 @@ class DatabaseHelper {
     final path = join(await getDatabasesPath(), 'dairy.db');
     return openDatabase(
       path,
-      version: 20, // Incremented version
+      version: 23,
       onCreate: _onCreate,
       onUpgrade: _onUpgrade,
     );
@@ -153,18 +152,21 @@ class DatabaseHelper {
 
     await db.execute('''
     CREATE TABLE demand (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      firestoreId TEXT UNIQUE,
-      batchId INTEGER,
-      clientId INTEGER,
-      productId INTEGER,
-      quantity REAL,
-      date TEXT,
-      isSynced INTEGER DEFAULT 0,
-      isDeleted INTEGER DEFAULT 0,
-      FOREIGN KEY(batchId) REFERENCES demand_batch(id),
-      FOREIGN KEY(clientId) REFERENCES clients(id),
-      FOREIGN KEY(productId) REFERENCES products(id)
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  firestoreId TEXT UNIQUE,
+  batchId INTEGER,
+  clientId INTEGER,
+  productId INTEGER,
+  quantity REAL,
+  date TEXT,
+  updatedAt TEXT,
+  isSynced INTEGER DEFAULT 0,
+  isDeleted INTEGER DEFAULT 0,
+  FOREIGN KEY(batchId) REFERENCES demand_batch(id),
+  FOREIGN KEY(clientId) REFERENCES clients(id),
+  FOREIGN KEY(productId) REFERENCES products(id)
+
+
     )
   ''');
 
@@ -179,196 +181,140 @@ class DatabaseHelper {
     )
   ''');
   }
-
   Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
-    // Ensure stock.updatedAt exists
+    // Upgrade demand table
+    if (oldVersion < 22) {
+      try {
+        await db.execute(
+            'ALTER TABLE demand ADD COLUMN updatedAt TEXT'
+        );
+        debugPrint('Column updatedAt added to demand table');
+      } catch (e) {
+        debugPrint('Column updatedAt might already exist in demand: $e');
+      }
+
+      try {
+        await db.execute(
+            'ALTER TABLE demand_batch ADD COLUMN updatedAt TEXT'
+        );
+        debugPrint('Column updatedAt added to demand_batch table');
+      } catch (e) {
+        debugPrint('Column updatedAt might already exist in demand_batch: $e');
+      }
+    }
+
+    // Upgrade products table (optional, if you need usageCount)
+    if (oldVersion < 21) {
+      try {
+        await db.execute(
+            'ALTER TABLE products ADD COLUMN usageCount INTEGER DEFAULT 0'
+        );
+        debugPrint('Column usageCount added to products table');
+      } catch (e) {
+        debugPrint('Column usageCount might already exist: $e');
+      }
+    }
+
+    // Upgrade stock table (optional)
     if (oldVersion < 20) {
       try {
-        await db.execute('ALTER TABLE stock ADD COLUMN updatedAt TEXT');
+        await db.execute(
+            'ALTER TABLE stock ADD COLUMN updatedAt TEXT'
+        );
+        debugPrint('Column updatedAt added to stock table');
       } catch (e) {
-        debugPrint('Column updatedAt might already exist in stock table: $e');
+        debugPrint('Column updatedAt might already exist in stock: $e');
       }
     }
 
-    // Bills.updatedAt
+    // Upgrade bills table (optional)
     if (oldVersion < 18) {
       try {
-        await db.execute('ALTER TABLE bills ADD COLUMN updatedAt TEXT');
+        await db.execute(
+            'ALTER TABLE bills ADD COLUMN updatedAt TEXT'
+        );
+        debugPrint('Column updatedAt added to bills table');
       } catch (e) {
-        debugPrint('updatedAt column might already exist in bills table: $e');
+        debugPrint('Column updatedAt might already exist in bills: $e');
       }
+    }
+  }
+  /// Generic wrapper for any DB action.
+  /// Saves locally and attempts background Firebase sync.
+  Future<T> runDbAction<T>(Future<T> Function(Database db) action) async {
+    final db = await database;
 
-      // Add UNIQUE index on firestoreId columns
-      final tables = [
-        'clients',
-        'products',
-        'bills',
-        'bill_items',
-        'ledger',
-        'demand_batch',
-        'demand'
-      ];
+    try {
+      // Run the local DB action immediately
+      final result = await action(db);
 
-      for (final table in tables) {
+      // ✅ Notify listeners/UI immediately that operation succeeded locally
+      debugPrint('Local DB action completed successfully');
+
+      // Try syncing in background (non-blocking)
+      _isConnected().then((connected) async {
+        if (connected && _uid != null) {
+          try {
+            await _syncPendingChanges();
+            debugPrint('Background sync completed');
+          } catch (e) {
+            debugPrint('Background sync failed: $e');
+          }
+        } else {
+          debugPrint('Offline: queued for later sync');
+        }
+      });
+
+      return result; // ✅ Return immediately so UI can close
+    } catch (e) {
+      debugPrint('DB action failed: $e');
+      rethrow;
+    }
+  }
+
+  /// Sync all unsynced rows from local DB to Firebase
+  Future<void> _syncPendingChanges() async {
+    final tables = ['clients', 'products', 'bills', 'bill_items', 'ledger', 'demand', 'demand_batch', 'stock'];
+
+    for (var table in tables) {
+      final db = await database;
+      final unsynced = await db.query(table, where: 'isSynced = 0');
+
+      for (var row in unsynced) {
         try {
-          final indexInfo = await db.rawQuery("PRAGMA index_list('$table')");
-          final hasUniqueIndex = indexInfo.any((index) {
-            final name = index['name'] as String?;
-            return name?.contains('firestoreId') ?? false;
-          });
-          if (!hasUniqueIndex) {
-            await db.execute(
-                'CREATE UNIQUE INDEX IF NOT EXISTS idx_${table}_firestoreId ON $table(firestoreId)'
-            );
+          final col = _col(table);
+          if (col != null && row['firestoreId'] != null) {
+            await col.doc(row['firestoreId'] as String?).set(row);
+            await db.update(table, {'isSynced': 1}, where: 'id = ?', whereArgs: [row['id']]);
           }
         } catch (e) {
-          debugPrint('Error adding unique constraint to $table: $e');
-        }
-      }
-    }
-      // Keep existing migrations...
-    if (oldVersion < 2) {
-      await db.execute('''
-        CREATE TABLE IF NOT EXISTS ledger (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          clientId INTEGER NOT NULL,
-          billId INTEGER,
-          firestoreId TEXT,
-          type TEXT NOT NULL,
-          amount REAL NOT NULL,
-          date TEXT NOT NULL,
-          note TEXT,
-          updatedAt TEXT,
-          FOREIGN KEY(clientId) REFERENCES clients(id),
-          FOREIGN KEY(billId) REFERENCES bills(id)
-        )
-      ''');
-    }
-
-    if (oldVersion < 3) {
-      await db.execute('''
-        CREATE TABLE IF NOT EXISTS demand_batch (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          demandDate TEXT NOT NULL,
-          closed INTEGER NOT NULL DEFAULT 0,
-          firestoreId TEXT
-        )
-      ''');
-      await db.execute('''
-        CREATE TABLE IF NOT EXISTS demand (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          batchId INTEGER,
-          clientId INTEGER,
-          productId INTEGER,
-          quantity REAL,
-          date TEXT,
-          firestoreId TEXT,
-          FOREIGN KEY(batchId) REFERENCES demand_batch(id),
-          FOREIGN KEY(clientId) REFERENCES clients(id),
-          FOREIGN KEY(productId) REFERENCES products(id)
-        )
-      ''');
-    }
-
-    if (oldVersion < 4) {
-      await db.execute('''
-        CREATE TABLE IF NOT EXISTS stock (
-          productId INTEGER PRIMARY KEY,
-          quantity REAL NOT NULL DEFAULT 0,
-          FOREIGN KEY(productId) REFERENCES products(id) ON DELETE CASCADE
-        )
-      ''');
-    }
-
-    if (oldVersion < 6) {
-      await db.execute('ALTER TABLE clients ADD COLUMN updatedAt TEXT');
-      await db.execute('ALTER TABLE products ADD COLUMN updatedAt TEXT');
-    }
-
-    if (oldVersion < 7) {
-      await db.execute('ALTER TABLE products ADD COLUMN firestoreId TEXT');
-    }
-
-    if (oldVersion < 8) {
-      await db.execute('ALTER TABLE bills ADD COLUMN firestoreId TEXT');
-      await db.execute('ALTER TABLE bill_items ADD COLUMN firestoreId TEXT');
-      await db.execute('ALTER TABLE ledger ADD COLUMN firestoreId TEXT');
-      await db.execute('ALTER TABLE demand_batch ADD COLUMN firestoreId TEXT');
-      await db.execute('ALTER TABLE demand ADD COLUMN firestoreId TEXT');
-    }
-
-    if (oldVersion < 9) {
-      await db.execute('ALTER TABLE ledger ADD COLUMN updatedAt TEXT');
-    }
-
-    if (oldVersion < 10) {
-      await db.execute('ALTER TABLE products ADD COLUMN stock REAL DEFAULT 0');
-      await db.execute(
-          'ALTER TABLE products ADD COLUMN isSynced INTEGER DEFAULT 0');
-    }
-
-    if (oldVersion < 11) {
-      final tables = [
-        'clients',
-        'bills',
-        'bill_items',
-        'ledger',
-        'demand_batch',
-        'demand',
-        'stock'
-      ];
-      for (final table in tables) {
-        try {
-          await db.execute(
-              'ALTER TABLE $table ADD COLUMN isSynced INTEGER DEFAULT 0');
-        } catch (e) {
-          // Column might already exist
-        }
-      }
-    }
-
-    if (oldVersion < 12) {
-      try {
-        await db.execute(
-            'ALTER TABLE bills ADD COLUMN isSynced INTEGER DEFAULT 0');
-      } catch (e) {
-        // Column might already exist
-      }
-    }
-
-    if (oldVersion < 13) {
-      try {
-        await db.execute(
-            'ALTER TABLE products ADD COLUMN costPrice REAL DEFAULT 0');
-      } catch (e) {
-        // Column might already exist
-      }
-    }
-
-    if (oldVersion < 14) {
-      final tables = ['clients', 'products', 'bills', 'bill_items', 'ledger'];
-      for (final t in tables) {
-        final cols = await db.rawQuery('PRAGMA table_info($t)');
-        final hasCol = cols.any((c) => c['name'] == 'isDeleted');
-        if (!hasCol) {
-          await db.execute(
-              'ALTER TABLE $t ADD COLUMN isDeleted INTEGER DEFAULT 0');
+          debugPrint('Sync failed for $table row ${row['id']}: $e');
         }
       }
     }
   }
 
-  // ---------------------------------------------------------------------------
-  // IMPROVED AUTO SYNC METHODS
-  // ---------------------------------------------------------------------------
 
-  /// Improved auto sync that runs AFTER transaction completion
+
+  // ========================================================================
+  // UTILITY - MUST BE EARLY
+  // ========================================================================
+
+  Future<List<Map<String, dynamic>>> getUnsynced(String table) async {
+    final dbClient = await database;
+    return dbClient.query(table,
+        where: '(isSynced = 0 OR isSynced IS NULL) AND (isDeleted = 0 OR isDeleted IS NULL)');
+  }
+
+  // ========================================================================
+  // SYNC METHODS
+  // ========================================================================
+
   Future<void> _autoSyncToFirebase(String table, int localId,
       String operation) async {
     if (!await canSync) return;
 
     try {
-      // 3️⃣ Wait a brief moment to ensure transaction is complete
       await Future.delayed(Duration(milliseconds: 100));
 
       switch (table) {
@@ -399,7 +345,6 @@ class DatabaseHelper {
     }
   }
 
-  // Improved sync methods with duplicate prevention
   Future<void> _syncClientToFirebase(int localId, String operation) async {
     final col = _col('clients');
     if (col == null) return;
@@ -419,17 +364,13 @@ class DatabaseHelper {
     }
 
     String? firestoreId = client.firestoreId;
-
-    // 1️⃣ Use deterministic ID - local primary key as Firestore docId
     final docId = firestoreId ?? localId.toString();
 
-    // Always use .doc().set() instead of .add()
     await col.doc(docId).set(client.toFirestore(), SetOptions(merge: true));
 
     if (firestoreId == null || firestoreId.isEmpty) {
-      firestoreId = docId;
       await db.update('clients', {
-        'firestoreId': firestoreId,
+        'firestoreId': docId,
         'isSynced': 1,
       }, where: 'id = ?', whereArgs: [localId]);
     } else {
@@ -438,8 +379,6 @@ class DatabaseHelper {
     }
   }
 
-
-  // Similar improvements for other sync methods...
   Future<void> _syncProductToFirebase(int localId, String operation) async {
     final col = _col('products');
     if (col == null) return;
@@ -464,9 +403,8 @@ class DatabaseHelper {
     await col.doc(docId).set(product.toFirestore(), SetOptions(merge: true));
 
     if (firestoreId == null || firestoreId.isEmpty) {
-      firestoreId = docId;
       await db.update('products', {
-        'firestoreId': firestoreId,
+        'firestoreId': docId,
         'isSynced': 1,
       }, where: 'id = ?', whereArgs: [localId]);
     } else {
@@ -499,9 +437,8 @@ class DatabaseHelper {
     await col.doc(docId).set(bill.toFirestore(), SetOptions(merge: true));
 
     if (firestoreId == null || firestoreId.isEmpty) {
-      firestoreId = docId;
       await db.update('bills', {
-        'firestoreId': firestoreId,
+        'firestoreId': docId,
         'isSynced': 1,
       }, where: 'id = ?', whereArgs: [localId]);
     } else {
@@ -534,9 +471,8 @@ class DatabaseHelper {
     await col.doc(docId).set(billItem.toFirestore(), SetOptions(merge: true));
 
     if (firestoreId == null || firestoreId.isEmpty) {
-      firestoreId = docId;
       await db.update('bill_items', {
-        'firestoreId': firestoreId,
+        'firestoreId': docId,
         'isSynced': 1,
       }, where: 'id = ?', whereArgs: [localId]);
     } else {
@@ -569,9 +505,8 @@ class DatabaseHelper {
     await col.doc(docId).set(ledger.toFirestore(), SetOptions(merge: true));
 
     if (firestoreId == null || firestoreId.isEmpty) {
-      firestoreId = docId;
       await db.update('ledger', {
-        'firestoreId': firestoreId,
+        'firestoreId': docId,
         'isSynced': 1,
       }, where: 'id = ?', whereArgs: [localId]);
     } else {
@@ -590,7 +525,6 @@ class DatabaseHelper {
     if (rows.isEmpty) return;
 
     final batch = rows.first;
-
     if (operation == 'delete') {
       final firestoreId = batch['firestoreId'] as String?;
       if (firestoreId?.isNotEmpty == true) {
@@ -605,9 +539,8 @@ class DatabaseHelper {
     await col.doc(docId).set(batch, SetOptions(merge: true));
 
     if (firestoreId == null || firestoreId.isEmpty) {
-      firestoreId = docId;
       await db.update('demand_batch', {
-        'firestoreId': firestoreId,
+        'firestoreId': docId,
         'isSynced': 1,
       }, where: 'id = ?', whereArgs: [localId]);
     } else {
@@ -626,7 +559,6 @@ class DatabaseHelper {
     if (rows.isEmpty) return;
 
     final demand = rows.first;
-
     if (operation == 'delete') {
       final firestoreId = demand['firestoreId'] as String?;
       if (firestoreId?.isNotEmpty == true) {
@@ -641,9 +573,8 @@ class DatabaseHelper {
     await col.doc(docId).set(demand, SetOptions(merge: true));
 
     if (firestoreId == null || firestoreId.isEmpty) {
-      firestoreId = docId;
       await db.update('demand', {
-        'firestoreId': firestoreId,
+        'firestoreId': docId,
         'isSynced': 1,
       }, where: 'id = ?', whereArgs: [localId]);
     } else {
@@ -652,210 +583,54 @@ class DatabaseHelper {
     }
   }
 
-  // ---------------------------------------------------------------------------
-  // IMPROVED RESTORE FROM FIREBASE WITH DUPLICATE PREVENTION
-  // ---------------------------------------------------------------------------
+  // ========================================================================
+  // CLIENTS
+  // ========================================================================
 
-  Future<bool> restoreFromFirebaseIfEmpty() async {
-    if (!await canSync) return false;
-
+  Future<List<Client>> getClients() async {
     final db = await database;
-
-    // Check if local DB is empty
-    final clientCount = Sqflite.firstIntValue(await db.rawQuery(
-        'SELECT COUNT(*) FROM clients WHERE isDeleted = 0')) ?? 0;
-    final productCount = Sqflite.firstIntValue(await db.rawQuery(
-        'SELECT COUNT(*) FROM products WHERE isDeleted = 0')) ?? 0;
-
-    if (clientCount > 0 || productCount > 0) {
-      debugPrint('Local DB not empty, skipping restore');
-      return false;
-    }
-
-    debugPrint('Local DB empty, restoring from Firebase...');
-
-    try {
-      await _restoreClientsFromFirebase();
-      await _restoreProductsFromFirebase();
-      await _restoreBillsFromFirebase();
-      await _restoreBillItemsFromFirebase();
-      await _restoreLedgerFromFirebase();
-      await _restoreDemandBatchesFromFirebase();
-      await _restoreDemandsFromFirebase();
-
-      debugPrint('Successfully restored data from Firebase');
-      return true;
-    } catch (e) {
-      debugPrint('Failed to restore from Firebase: $e');
-      return false;
-    }
+    final rows = await db.query(
+        'clients', where: 'isDeleted = 0', orderBy: 'name ASC');
+    return rows.map((m) => Client.fromMap(m)).toList();
   }
 
-  Future<void> _restoreClientsFromFirebase() async {
-    final col = _col('clients');
-    if (col == null) return;
-
-    final snapshot = await col.get();
+  Future<Client?> getClientById(int id) async {
     final db = await database;
-
-    for (final doc in snapshot.docs) {
-      final client = Client.fromFirestore(doc);
-      final localData = client.copyWith(isSynced: true).toMap();
-      localData['firestoreId'] = doc.id;
-
-      // 6️⃣ Use conflict resolution to prevent duplicates
-      await db.insert(
-        'clients',
-        localData,
-        conflictAlgorithm: ConflictAlgorithm.replace,
-      );
-    }
-    debugPrint('Restored ${snapshot.docs.length} clients');
+    final rows = await db.query('clients', where: 'id = ? AND isDeleted = 0',
+        whereArgs: [id],
+        limit: 1);
+    if (rows.isEmpty) return null;
+    return Client.fromMap(rows.first);
   }
 
-  Future<void> _restoreProductsFromFirebase() async {
-    final col = _col('products');
-    if (col == null) return;
-
-    final snapshot = await col.get();
+  Future<List<Client>> searchClients(String query) async {
     final db = await database;
-
-    for (final doc in snapshot.docs) {
-      final product = Product.fromFirestore(doc);
-      final localData = product.copyWith(isSynced: true).toMap();
-      localData['firestoreId'] = doc.id;
-
-      await db.insert(
-        'products',
-        localData,
-        conflictAlgorithm: ConflictAlgorithm.replace,
-      );
-    }
-    debugPrint('Restored ${snapshot.docs.length} products');
+    final rows = await db.query(
+      'clients',
+      where: '(name LIKE ? OR phone LIKE ?) AND isDeleted = 0',
+      whereArgs: ['%$query%', '%$query%'],
+      orderBy: 'name ASC',
+    );
+    return rows.map((m) => Client.fromMap(m)).toList();
   }
 
-  Future<void> _restoreBillsFromFirebase() async {
-    final col = _col('bills');
-    if (col == null) return;
-
-    final snapshot = await col.get();
+  Future<int> getClientsCount() async {
     final db = await database;
-
-    for (final doc in snapshot.docs) {
-      final bill = Bill.fromFirestore(doc.id, doc.data());
-      final localData = bill.toMap();
-      localData['isSynced'] = 1;
-      localData['firestoreId'] = doc.id;
-
-      await db.insert(
-        'bills',
-        localData,
-        conflictAlgorithm: ConflictAlgorithm.replace,
-      );
-    }
-    debugPrint('Restored ${snapshot.docs.length} bills');
+    final result = await db.rawQuery(
+        'SELECT COUNT(*) as count FROM clients WHERE isDeleted = 0');
+    return (result.first['count'] as int?) ?? 0;
   }
-
-  Future<void> _restoreBillItemsFromFirebase() async {
-    final col = _col('bill_items');
-    if (col == null) return;
-
-    final snapshot = await col.get();
-    final db = await database;
-
-    for (final doc in snapshot.docs) {
-      final item = BillItem.fromFirestore(doc);
-      final localData = item.copyWith(isSynced: true).toMap();
-      localData['firestoreId'] = doc.id;
-
-      await db.insert(
-        'bill_items',
-        localData,
-        conflictAlgorithm: ConflictAlgorithm.replace,
-      );
-    }
-    debugPrint('Restored ${snapshot.docs.length} bill items');
-  }
-
-  Future<void> _restoreLedgerFromFirebase() async {
-    final col = _col('ledger');
-    if (col == null) return;
-
-    final snapshot = await col.get();
-    final db = await database;
-
-    for (final doc in snapshot.docs) {
-      final entry = LedgerEntry.fromFirestore(doc);
-      final localData = entry.copyWith(isSynced: true).toMap();
-      localData['firestoreId'] = doc.id;
-
-      await db.insert(
-        'ledger',
-        localData,
-        conflictAlgorithm: ConflictAlgorithm.replace,
-      );
-    }
-    debugPrint('Restored ${snapshot.docs.length} ledger entries');
-  }
-
-  Future<void> _restoreDemandBatchesFromFirebase() async {
-    final col = _col('demand_batch');
-    if (col == null) return;
-
-    final snapshot = await col.get();
-    final db = await database;
-
-    for (final doc in snapshot.docs) {
-      final data = doc.data();
-      data['firestoreId'] = doc.id;
-      data['isSynced'] = 1;
-
-      await db.insert(
-        'demand_batch',
-        data,
-        conflictAlgorithm: ConflictAlgorithm.replace,
-      );
-    }
-    debugPrint('Restored ${snapshot.docs.length} demand batches');
-  }
-
-  Future<void> _restoreDemandsFromFirebase() async {
-    final col = _col('demand');
-    if (col == null) return;
-
-    final snapshot = await col.get();
-    final db = await database;
-
-    for (final doc in snapshot.docs) {
-      final data = doc.data();
-      data['firestoreId'] = doc.id;
-      data['isSynced'] = 1;
-
-      await db.insert(
-        'demand',
-        data,
-        conflictAlgorithm: ConflictAlgorithm.replace,
-      );
-    }
-    debugPrint('Restored ${snapshot.docs.length} demands');
-  }
-
-  // ---------------------------------------------------------------------------
-  // IMPROVED CLIENTS WITH BETTER CONFLICT HANDLING
-  // ---------------------------------------------------------------------------
 
   Future<int> insertClient(Client c) async {
     final db = await database;
     final updatedClient = c.copyWith(
-      updatedAt: DateTime.now(), // 4️⃣ Always update timestamp
+      updatedAt: DateTime.now(),
       isSynced: false,
     );
 
-    // 5️⃣ Use replace instead of abort to handle conflicts gracefully
     final id = await db.insert('clients', updatedClient.toMap(),
         conflictAlgorithm: ConflictAlgorithm.replace);
 
-    // 3️⃣ Sync after transaction completion
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _autoSyncToFirebase('clients', id, 'insert');
     });
@@ -866,7 +641,7 @@ class DatabaseHelper {
   Future<int> updateClient(Client c) async {
     final db = await database;
     final updatedClient = c.copyWith(
-      updatedAt: DateTime.now(), // 4️⃣ Always update timestamp
+      updatedAt: DateTime.now(),
       isSynced: false,
     );
 
@@ -882,250 +657,15 @@ class DatabaseHelper {
     return result;
   }
 
-  // ---------------------------------------------------------------------------
-  // IMPROVED BILLS WITH ITEMS AND STOCK HANDLING
-  // ---------------------------------------------------------------------------
-
-  Future<int> insertBillWithItems(Bill bill, List<BillItem> items) async {
-    final db = await database;
-    return await db.transaction<int>((txn) async {
-      // Insert Bill
-      final billId = await txn.insert(
-        'bills',
-        bill.copyWith(isSynced: false, updatedAt: DateTime.now()).toMap(),
-      );
-
-      // Insert Bill Items and adjust stock
-      for (var item in items) {
-        final itemMap = item.copyWith(
-          billId: billId,
-          isSynced: false,
-          updatedAt: DateTime.now(),
-        ).toMap();
-
-        // Insert BillItem
-        final itemId = await txn.insert('bill_items', itemMap);
-
-        // Reduce Stock
-        final stockRow = await txn.query(
-          'stock',
-          columns: ['quantity'],
-          where: 'productId = ?',
-          whereArgs: [item.productId],
-        );
-
-        double existingQty = stockRow.isNotEmpty
-            ? (stockRow.first['quantity'] as num).toDouble()
-            : 0.0;
-
-        final newQty = (existingQty - item.quantity).clamp(0, double.infinity);
-
-        if (stockRow.isNotEmpty) {
-          await txn.update(
-            'stock',
-            {'quantity': newQty, 'isSynced': 0, 'updatedAt': DateTime.now().toIso8601String()},
-            where: 'productId = ?',
-            whereArgs: [item.productId],
-          );
-        } else {
-          await txn.insert(
-            'stock',
-            {
-              'productId': item.productId,
-              'quantity': newQty,
-              'isSynced': 0,
-              'updatedAt': DateTime.now().toIso8601String(),
-            },
-          );
-        }
-
-        // Auto-sync this bill item
-        _autoSyncToFirebase('bill_items', itemId, 'insert');
-      }
-
-      // Auto-sync the bill after items
-      _autoSyncToFirebase('bills', billId, 'insert');
-
-      return billId;
-    });
-  }
-
-  // 2️⃣ Unified stock management using products table as source of truth
-  Future<void> _updateProductStock(
-      sqflite.Transaction txn, int productId, double soldQuantity) async {
-
-    // Get current stock from products table
-    final currentStock = await txn.rawQuery(
-      'SELECT stock FROM products WHERE id = ?',
-      [productId],
-    );
-
-    double existingStock = 0.0;
-    if (currentStock.isNotEmpty) {
-      existingStock = (currentStock.first['stock'] as num?)?.toDouble() ?? 0.0;
-    }
-
-    // Subtract sold quantity
-    final newStock = (existingStock - soldQuantity).clamp(0, double.infinity);
-
-    // Update products table
-    await txn.update(
-      'products',
-      {
-        'stock': newStock,
-        'updatedAt': DateTime.now().toIso8601String(),
-        'isSynced': 0,
-      },
-      where: 'id = ?',
-      whereArgs: [productId],
-    );
-
-    // Update stock table
-    await txn.insert(
-      'stock',
-      {
-        'productId': productId,
-        'quantity': newStock,
-        'updatedAt': DateTime.now().toIso8601String(), // ✅ add updatedAt
-        'isSynced': 0,
-      },
-      conflictAlgorithm: sqflite.ConflictAlgorithm.replace,
-    );
-  }
-
-
-  // ---------------------------------------------------------------------------
-  // IMPROVED STOCK MANAGEMENT
-  // ---------------------------------------------------------------------------
-
-  Future<void> setStock(int productId, double qty) async {
-    final db = await database;
-
-    await db.transaction((txn) async {
-      // 2️⃣ Update products table as source of truth
-      await txn.update(
-        'products',
-        {
-          'stock': qty,
-          'updatedAt': DateTime.now().toIso8601String(),
-          'isSynced': 0,
-        },
-        where: 'id = ?',
-        whereArgs: [productId],
-      );
-
-      // Update stock table for consistency
-      await txn.insert(
-        'stock',
-        {
-          'productId': productId,
-          'quantity': qty,
-          'isSynced': 0,
-        },
-        conflictAlgorithm: ConflictAlgorithm.replace,
-      );
-    });
-
-    // Sync only the product, not both tables
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _autoSyncToFirebase('products', productId, 'update');
-    });
-  }
-
-  // ---------------------------------------------------------------------------
-  // IMPROVED MANUAL SYNC
-  // ---------------------------------------------------------------------------
-
-  Future<bool> forceSyncToFirebase() async {
-    if (!await canSync) {
-      debugPrint('Cannot sync: no connection or not authenticated');
-      return false;
-    }
-
-    try {
-      debugPrint('Starting manual force sync...');
-
-      // 7️⃣ Include all tables that need sync
-      final tables = [
-        'clients', 'products', 'bills', 'bill_items', 'ledger',
-        'demand_batch', 'demand'
-      ];
-
-      for (final table in tables) {
-        final unsynced = await getUnsynced(table);
-        debugPrint('Syncing ${unsynced.length} unsynced records from $table');
-
-        for (final row in unsynced) {
-          final id = row['id'] as int;
-          await _autoSyncToFirebase(table, id, 'update');
-        }
-      }
-
-      debugPrint('Manual sync completed');
-      return true;
-    } catch (e) {
-      debugPrint('Manual sync failed: $e');
-      return false;
-    }
-  }
-
-  // ---------------------------------------------------------------------------
-  // UTILITY METHODS
-  // ---------------------------------------------------------------------------
-
-  Future<List<Map<String, dynamic>>> getUnsynced(String table) async {
-    final dbClient = await database;
-    return dbClient.query(
-        table, where: '(isSynced = 0 OR isSynced IS NULL) AND isDeleted = 0');
-  }
-
-  // Existing methods remain the same but with timestamp updates where needed...
-  Future<int> updateBillTotal(int billId, double total) async {
-    final dbClient = await database;
-    final result = await dbClient.update(
-      'bills',
-      {
-        'totalAmount': total,
-        'isSynced': 0,
-        'updatedAt': DateTime.now().toIso8601String(), // 4️⃣ Add timestamp
-      },
-      where: 'id = ?',
-      whereArgs: [billId],
-    );
-
-    if (result > 0) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        _autoSyncToFirebase('bills', billId, 'update');
-      });
-    }
-
-    return result;
-  }
-
-// ... (keep all other existing methods but ensure they update timestamps where needed)
-// ... (previous code continues)
-
-  // ---------------------------------------------------------------------------
-  // CLIENTS (WITH IMPROVED CONFLICT HANDLING)
-  // ---------------------------------------------------------------------------
-
-  Future<List<Client>> getClients() async {
-    final db = await database;
-    final rows = await db.query('clients', where: 'isDeleted = 0', orderBy: 'name ASC');
-    return rows.map((m) => Client.fromMap(m)).toList();
-  }
-
   Future<int> deleteClient(int id) async {
     final db = await database;
 
-    // Soft delete with timestamp
     final result = await db.update('clients', {
       'isDeleted': 1,
       'isSynced': 0,
-      'updatedAt': DateTime.now().toIso8601String(), // 4️⃣ Add timestamp
+      'updatedAt': DateTime.now().toIso8601String(),
     }, where: 'id = ?', whereArgs: [id]);
 
-    // Auto sync to Firebase
     if (result > 0) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         _autoSyncToFirebase('clients', id, 'delete');
@@ -1144,13 +684,23 @@ class DatabaseHelper {
     return await insertClient(client);
   }
 
-  // ---------------------------------------------------------------------------
-  // PRODUCTS (WITH IMPROVED STOCK HANDLING)
-  // ---------------------------------------------------------------------------
+  // ========================================================================
+  // PRODUCTS
+  // ========================================================================
 
   Future<List<Product>> getProducts() async {
     final db = await database;
-    final rows = await db.query('products', where: 'isDeleted = 0', orderBy: 'name ASC');
+
+    final rows = await db.rawQuery('''
+    SELECT p.*, 
+           IFNULL(COUNT(bi.id), 0) AS usageCount
+    FROM products p
+    LEFT JOIN bill_items bi 
+      ON p.id = bi.productId AND bi.isDeleted = 0
+    WHERE p.isDeleted = 0
+    GROUP BY p.id
+    ORDER BY usageCount DESC, LOWER(p.name) ASC
+  ''');
 
     final safeRows = rows.map((m) {
       final safeMap = Map<String, dynamic>.from(m);
@@ -1163,14 +713,62 @@ class DatabaseHelper {
     return safeRows.map((m) => Product.fromMap(m)).toList();
   }
 
+
+  Future<Product?> getProductById(int id) async {
+    final db = await database;
+    final rows = await db.query('products', where: 'id = ? AND isDeleted = 0',
+        whereArgs: [id],
+        limit: 1);
+    if (rows.isEmpty) return null;
+
+    final row = rows.first;
+    final safeRow = Map<String, dynamic>.from(row);
+    safeRow['stock'] ??= 0.0;
+    safeRow['costPrice'] ??= 0.0;
+
+    return Product.fromMap(safeRow);
+  }
+
+  Future<List<Product>> searchProducts(String query) async {
+    final db = await database;
+
+    final rows = await db.rawQuery('''
+    SELECT p.*, 
+           IFNULL(COUNT(bi.id), 0) AS usageCount
+    FROM products p
+    LEFT JOIN bill_items bi 
+      ON p.id = bi.productId AND bi.isDeleted = 0
+    WHERE p.isDeleted = 0 AND p.name LIKE ?
+    GROUP BY p.id
+    ORDER BY usageCount DESC, LOWER(p.name) ASC
+  ''', ['%$query%']);
+
+    final safeRows = rows.map((m) {
+      final safeMap = Map<String, dynamic>.from(m);
+      safeMap['stock'] ??= 0.0;
+      safeMap['costPrice'] ??= 0.0;
+      safeMap['isSynced'] ??= 0;
+      return safeMap;
+    }).toList();
+
+    return safeRows.map((m) => Product.fromMap(m)).toList();
+  }
+
+
+  Future<int> getProductsCount() async {
+    final db = await database;
+    final result = await db.rawQuery(
+        'SELECT COUNT(*) as count FROM products WHERE isDeleted = 0');
+    return (result.first['count'] as int?) ?? 0;
+  }
+
   Future<int> insertProduct(Product p) async {
     final db = await database;
     final updatedProduct = p.copyWith(
-      updatedAt: DateTime.now(), // 4️⃣ Add timestamp
+      updatedAt: DateTime.now(),
       isSynced: false,
     );
 
-    // 5️⃣ Use replace for better conflict handling
     final id = await db.insert('products', updatedProduct.toMap(),
         conflictAlgorithm: ConflictAlgorithm.replace);
 
@@ -1184,7 +782,7 @@ class DatabaseHelper {
   Future<int> updateProduct(Product p) async {
     final db = await database;
     final updatedProduct = p.copyWith(
-      updatedAt: DateTime.now(), // 4️⃣ Add timestamp
+      updatedAt: DateTime.now(),
       isSynced: false,
     );
 
@@ -1203,11 +801,10 @@ class DatabaseHelper {
   Future<int> deleteProduct(int id) async {
     final db = await database;
 
-    // Soft delete with timestamp
     final result = await db.update('products', {
       'isDeleted': 1,
       'isSynced': 0,
-      'updatedAt': DateTime.now().toIso8601String(), // 4️⃣ Add timestamp
+      'updatedAt': DateTime.now().toIso8601String(),
     }, where: 'id = ?', whereArgs: [id]);
 
     if (result > 0) {
@@ -1224,58 +821,31 @@ class DatabaseHelper {
     return await insertProduct(product);
   }
 
-  Future<int> updateProductStock(int productId, double newQty) async {
-    final db = await database;
-    final result = await db.update(
-      'products',
-      {
-        'stock': newQty,
-        'updatedAt': DateTime.now().toIso8601String(), // 4️⃣ Add timestamp
-        'isSynced': 0,
-      },
-      where: 'id = ?',
-      whereArgs: [productId],
-    );
-
-    if (result > 0) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        _autoSyncToFirebase('products', productId, 'update');
-      });
+  Future<void> saveProductsToLocal(List<Product> products) async {
+    final dbClient = await database;
+    final batch = dbClient.batch();
+    for (final p in products) {
+      batch.insert(
+          'products', p.toMap(), conflictAlgorithm: ConflictAlgorithm.replace);
     }
-
-    return result;
-  }
-  Future<void> reduceStockForBill(List<BillItem> items) async {
-    for (var item in items) {
-      final product = await getProductById(item.productId); // fetch current stock
-      if (product != null) {
-        final newStock =
-        (product.stock - item.quantity).clamp(0, double.infinity).toDouble();
-        await updateProductStock(product.id!, newStock);
-      }
-    }
+    await batch.commit(noResult: true);
   }
 
+  // ========================================================================
+  // BILLS - ALL METHODS INCLUDED
+  // ========================================================================
 
-
-  // ---------------------------------------------------------------------------
-  // BILLS (WITH IMPROVED SYNC HANDLING)
-  // ---------------------------------------------------------------------------
-
-  Future<int> insertBill(Bill bill) async {
+  Future<List<Bill>> getAllBills() async {
     final db = await database;
-    final updatedBill = bill.copyWith(
-      isSynced: false,
-      updatedAt: DateTime.now(), // 4️⃣ Add timestamp
-    );
+    final rows = await db.query(
+        'bills', where: 'isDeleted = 0', orderBy: 'date DESC');
+    return rows.map((r) => Bill.fromMap(r)).toList();
+  }
 
-    final id = await db.insert('bills', updatedBill.toMap());
-
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _autoSyncToFirebase('bills', id, 'insert');
-    });
-
-    return id;
+  Future<List<Map<String, dynamic>>> getBills() async {
+    final dbClient = await database;
+    return dbClient.query(
+        'bills', where: 'isDeleted = 0', orderBy: 'date DESC');
   }
 
   Future<Bill?> getBillById(int billId) async {
@@ -1299,219 +869,18 @@ class DatabaseHelper {
     return rows.map((r) => Bill.fromMap(r)).toList();
   }
 
-  Future<int> updateBill(Bill bill) async {
+  Future<int> getBillsCount() async {
     final db = await database;
-    final updatedBill = bill.copyWith(
-      isSynced: false,
-      updatedAt: DateTime.now(), // 4️⃣ Add timestamp
-    );
-
-    final result = await db.update('bills', updatedBill.toMap(),
-        where: 'id = ?', whereArgs: [bill.id]);
-
-    if (result > 0 && bill.id != null) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        _autoSyncToFirebase('bills', bill.id!, 'update');
-      });
-    }
-
-    return result;
+    final result = await db.rawQuery(
+        'SELECT COUNT(*) as count FROM bills WHERE isDeleted = 0');
+    return (result.first['count'] as int?) ?? 0;
   }
 
-  Future<int> deleteBill(int id) async {
+  Future<double> getTotalBillsAmount() async {
     final db = await database;
-
-    // Soft delete with timestamp
-    final result = await db.update('bills', {
-      'isDeleted': 1,
-      'isSynced': 0,
-      'updatedAt': DateTime.now().toIso8601String(), // 4️⃣ Add timestamp
-    }, where: 'id = ?', whereArgs: [id]);
-
-    if (result > 0) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        _autoSyncToFirebase('bills', id, 'delete');
-      });
-    }
-
-    return result;
-  }
-
-  Future<List<Map<String, dynamic>>> getBills() async {
-    final dbClient = await database;
-    return dbClient.query('bills', where: 'isDeleted = 0', orderBy: 'date DESC');
-  }
-
-  Future<void> updateBillWithItems(Bill bill, List<BillItem> newItems) async {
-    final db = await database;
-
-    await db.transaction((txn) async {
-      // 1️⃣ Update Bill itself
-      await txn.update(
-        'bills',
-        bill.copyWith(isSynced: false, updatedAt: DateTime.now()).toMap(),
-        where: 'id = ?',
-        whereArgs: [bill.id],
-      );
-      _autoSyncToFirebase('bills', bill.id!, 'update');
-
-      // 2️⃣ Get existing items
-      final existingRows = await txn.query(
-        'bill_items',
-        where: 'billId = ?',
-        whereArgs: [bill.id],
-      );
-
-      final existingItems = existingRows.map((row) => BillItem.fromMap(row)).toList();
-
-      // 3️⃣ Track item IDs
-      final existingIds = existingItems.map((e) => e.id).toSet();
-      final newIds = newItems.where((i) => i.id != null).map((i) => i.id).toSet();
-
-      // 4️⃣ Remove deleted items & restore stock
-      for (var oldItem in existingItems) {
-        if (!newIds.contains(oldItem.id)) {
-          // Restore stock for the removed item
-          // Restore stock
-          final stockRow = await txn.query(
-            'stock',
-            columns: ['quantity'],
-            where: 'productId = ?',
-            whereArgs: [oldItem.productId],
-          );
-          if (stockRow.isNotEmpty) {
-            double existingQty = (stockRow.first['quantity'] as num).toDouble();
-            await txn.update(
-              'stock',
-              {'quantity': existingQty + oldItem.quantity, 'isSynced': 0, 'updatedAt': DateTime.now().toIso8601String()},
-              where: 'productId = ?',
-              whereArgs: [oldItem.productId],
-            );
-          }
-          else {
-            // If stock row doesn't exist, create it
-            await txn.insert(
-              'stock',
-              {
-                'productId': oldItem.productId,
-                'quantity': oldItem.quantity,
-                'isSynced': 0,
-                'updatedAt': DateTime.now().toIso8601String()
-              },
-            );
-          }
-
-          // Delete the item itself
-          await txn.delete('bill_items', where: 'id = ?', whereArgs: [oldItem.id]);
-          _autoSyncToFirebase('bill_items', oldItem.id!, 'delete');
-        }
-      }
-
-
-      // 5️⃣ Add or update new items
-      for (var item in newItems) {
-        if (item.id == null) {
-          // New item: insert
-          final itemId = await txn.insert(
-            'bill_items',
-            item.copyWith(
-              billId: bill.id,
-              isSynced: false,
-              updatedAt: DateTime.now(),
-            ).toMap(),
-          );
-
-          // Reduce stock
-          final stockRow = await txn.query(
-            'stock',
-            columns: ['quantity'],
-            where: 'productId = ?',
-            whereArgs: [item.productId],
-          );
-
-          double existingQty = stockRow.isNotEmpty ? (stockRow.first['quantity'] as num).toDouble() : 0.0;
-          final newQty = (existingQty - item.quantity).clamp(0, double.infinity);
-
-          if (stockRow.isNotEmpty) {
-            await txn.update(
-              'stock',
-              {'quantity': newQty, 'isSynced': 0, 'updatedAt': DateTime.now().toIso8601String()},
-              where: 'productId = ?',
-              whereArgs: [item.productId],
-            );
-          } else {
-            await txn.insert(
-              'stock',
-              {'productId': item.productId, 'quantity': newQty, 'isSynced': 0, 'updatedAt': DateTime.now().toIso8601String()},
-            );
-          }
-
-          _autoSyncToFirebase('bill_items', itemId, 'insert');
-        } else {
-          // Existing item: update quantity & other fields
-          final oldItem = existingItems.firstWhere((e) => e.id == item.id);
-
-          // Adjust stock based on quantity difference
-          final diff = item.quantity - oldItem.quantity;
-          final stockRow = await txn.query(
-            'stock',
-            columns: ['quantity'],
-            where: 'productId = ?',
-            whereArgs: [item.productId],
-          );
-          double existingQty = stockRow.isNotEmpty ? (stockRow.first['quantity'] as num).toDouble() : 0.0;
-          final newQty = (existingQty - diff).clamp(0, double.infinity);
-
-          if (stockRow.isNotEmpty) {
-            await txn.update(
-              'stock',
-              {'quantity': newQty, 'isSynced': 0, 'updatedAt': DateTime.now().toIso8601String()},
-              where: 'productId = ?',
-              whereArgs: [item.productId],
-            );
-          }
-
-          // Update item
-          await txn.update(
-            'bill_items',
-            item.copyWith(isSynced: false, updatedAt: DateTime.now()).toMap(),
-            where: 'id = ?',
-            whereArgs: [item.id],
-          );
-
-          _autoSyncToFirebase('bill_items', item.id!, 'update');
-        }
-      }
-    });
-  }
-
-  Future<void> deleteBillCompletely(int id) async {
-    final db = await database;
-
-    await db.transaction((txn) async {
-      // Mark as deleted with timestamps
-      await txn.update('bill_items', {
-        'isDeleted': 1,
-        'isSynced': 0,
-        'updatedAt': DateTime.now().toIso8601String(),
-      }, where: 'billId = ?', whereArgs: [id]);
-
-      await txn.update('bills', {
-        'isDeleted': 1,
-        'isSynced': 0,
-        'updatedAt': DateTime.now().toIso8601String(),
-      }, where: 'id = ?', whereArgs: [id]);
-
-      await txn.update('ledger', {
-        'isDeleted': 1,
-        'isSynced': 0,
-        'updatedAt': DateTime.now().toIso8601String(),
-      }, where: 'billId = ?', whereArgs: [id]);
-    }).then((_) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        _autoSyncToFirebase('bills', id, 'delete');
-      });
-    });
+    final result = await db.rawQuery(
+        'SELECT SUM(totalAmount) as total FROM bills WHERE isDeleted = 0');
+    return (result.first['total'] as num?)?.toDouble() ?? 0.0;
   }
 
   Future<double> getLastCarryForward(int clientId) async {
@@ -1531,9 +900,242 @@ class DatabaseHelper {
     return 0.0;
   }
 
-  // ---------------------------------------------------------------------------
-  // BILL ITEMS (WITH PROPER SYNC)
-  // ---------------------------------------------------------------------------
+  Future<int> insertBill(Bill bill) async {
+    final db = await database;
+    final updatedBill = bill.copyWith(
+      isSynced: false,
+      updatedAt: DateTime.now(),
+    );
+
+    final id = await db.insert('bills', updatedBill.toMap());
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _autoSyncToFirebase('bills', id, 'insert');
+    });
+
+    return id;
+  }
+
+  Future<int> insertBillWithItems(Bill bill, List<BillItem> items) async {
+    final db = await database;
+
+    return await db.transaction<int>((txn) async {
+      // Bill insert
+      final billId = await txn.insert(
+        'bills',
+        bill.copyWith(isSynced: false, updatedAt: DateTime.now()).toMap(),
+      );
+
+      // Ledger entry for bill
+      await txn.insert(
+        'ledger',
+        {
+          'clientId': bill.clientId,
+          'type': 'bill',
+          'amount': bill.totalAmount,
+          'date': bill.date.toIso8601String(),
+          'isSynced': 0,
+          'updatedAt': DateTime.now().toIso8601String(),
+        },
+      );
+
+      // Bill items insert + stock update
+      for (var item in items) {
+        final itemMap = item.copyWith(
+          billId: billId,
+          isSynced: false,
+          updatedAt: DateTime.now(),
+        ).toMap();
+
+        final itemId = await txn.insert('bill_items', itemMap);
+
+        // Stock update
+        final stockRow = await txn.query(
+          'products',
+          columns: ['stock'],
+          where: 'id = ?',
+          whereArgs: [item.productId],
+        );
+
+        double existingQty =
+        stockRow.isNotEmpty ? (stockRow.first['stock'] as num).toDouble() : 0;
+
+        final newQty = (existingQty - item.quantity).clamp(0, double.infinity);
+
+        await txn.update(
+          'products',
+          {
+            'stock': newQty,
+            'isSynced': 0,
+            'updatedAt': DateTime.now().toIso8601String(),
+          },
+          where: 'id = ?',
+          whereArgs: [item.productId],
+        );
+
+        // Auto-sync
+        _autoSyncToFirebase('bill_items', itemId, 'insert');
+        _autoSyncToFirebase('products', item.productId, 'update');
+      }
+
+      _autoSyncToFirebase('bills', billId, 'insert');
+
+      return billId;
+    });
+  }
+
+
+  Future<int> updateBillWithLedger(Bill bill, {List<BillItem>? updatedItems}) async {
+    final db = await database;
+
+    return await db.transaction<int>((txn) async {
+      // 1️⃣ Update bill
+      final updatedBill = bill.copyWith(
+        isSynced: false,
+        updatedAt: DateTime.now(),
+      );
+      final result = await txn.update(
+        'bills',
+        updatedBill.toMap(),
+        where: 'id = ?',
+        whereArgs: [bill.id],
+      );
+
+      if (result == 0 || bill.id == null) return 0;
+
+      // 2️⃣ Optional: Update bill items if provided
+      if (updatedItems != null) {
+        // Delete old items
+        await txn.update(
+          'bill_items',
+          {
+            'isDeleted': 1,
+            'isSynced': 0,
+            'updatedAt': DateTime.now().toIso8601String(),
+          },
+          where: 'billId = ?',
+          whereArgs: [bill.id],
+        );
+
+        // Insert new items and update stock
+        for (var item in updatedItems) {
+          final itemId = await txn.insert(
+            'bill_items',
+            item.copyWith(
+              billId: bill.id,
+              isSynced: false,
+              updatedAt: DateTime.now(),
+            ).toMap(),
+          );
+
+          final stockRow = await txn.query(
+            'products',
+            columns: ['stock'],
+            where: 'id = ? AND isDeleted = 0',
+            whereArgs: [item.productId],
+          );
+
+          double existingQty =
+          stockRow.isNotEmpty ? (stockRow.first['stock'] as num).toDouble() : 0.0;
+          final newQty = (existingQty - item.quantity).clamp(0, double.infinity);
+
+          await txn.update(
+            'products',
+            {
+              'stock': newQty,
+              'isSynced': 0,
+              'updatedAt': DateTime.now().toIso8601String(),
+            },
+            where: 'id = ?',
+            whereArgs: [item.productId],
+          );
+
+          _autoSyncToFirebase('bill_items', itemId, 'insert');
+          _autoSyncToFirebase('products', item.productId, 'update');
+        }
+      }
+
+      // 3️⃣ Update ledger entry for this bill
+      await txn.update(
+        'ledger',
+        {
+          'amount': bill.totalAmount ?? 0.0,
+          'date': bill.date.toIso8601String(),
+          'note': 'Bill updated',
+          'isSynced': 0,
+          'updatedAt': DateTime.now().toIso8601String(),
+        },
+        where: 'billId = ? AND type = ?',
+        whereArgs: [bill.id, 'bill'],
+      );
+
+      _autoSyncToFirebase('bills', bill.id!, 'update');
+
+      return result;
+    });
+  }
+
+
+
+
+  Future<int> updateBill(Bill bill) async {
+    final db = await database;
+    final updatedBill = bill.copyWith(
+      isSynced: false,
+      updatedAt: DateTime.now(),
+    );
+
+    final result = await db.update('bills', updatedBill.toMap(),
+        where: 'id = ?', whereArgs: [bill.id]);
+
+    if (result > 0 && bill.id != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _autoSyncToFirebase('bills', bill.id!, 'update');
+      });
+    }
+
+    return result;
+  }
+
+  Future<void> updateBillTotal(int billId, double total) async {
+    final dbClient = await database;
+    final result = await dbClient.update(
+      'bills',
+      {
+        'totalAmount': total,
+        'isSynced': 0,
+        'updatedAt': DateTime.now().toIso8601String(),
+      },
+      where: 'id = ?',
+      whereArgs: [billId],
+    );
+
+    if (result > 0) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _autoSyncToFirebase('bills', billId, 'update');
+      });
+    }
+  }
+
+  Future<int> deleteBill(int id) async {
+    final db = await database;
+    final result = await db.update('bills', {
+      'isDeleted': 1,
+      'isSynced': 0,
+      'updatedAt': DateTime.now().toIso8601String(),
+    }, where: 'id = ?', whereArgs: [id]);
+
+    if (result > 0) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _autoSyncToFirebase('bills', id, 'delete');
+      });
+    }
+    return result;
+  }
+
+  // ========================================================================
+  // BILL ITEMS
+  // ========================================================================
 
   Future<List<BillItem>> getBillItems(int billId) async {
     final db = await database;
@@ -1553,35 +1155,33 @@ class DatabaseHelper {
   Future<int> insertBillItem(BillItem item) async {
     final db = await database;
     final updatedItem = item.copyWith(
-        isSynced: false,
-        updatedAt: DateTime.now() // 4️⃣ Add timestamp
+      isSynced: false,
+      updatedAt: DateTime.now(),
     );
 
     final id = await db.insert('bill_items', updatedItem.toMap());
 
+    // ✅ Increment usage count whenever a product is billed
+    await db.rawUpdate(
+      'UPDATE products SET usageCount = usageCount + 1, isSynced = 0, updatedAt = ? WHERE id = ?',
+      [DateTime.now().toIso8601String(), item.productId],
+    );
+
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _autoSyncToFirebase('bill_items', id, 'insert');
+      _autoSyncToFirebase('products', item.productId, 'update');
     });
 
     return id;
   }
 
-  Future<int> deleteBillItemsByBillId(int billId) async {
-    final db = await database;
-    return db.update('bill_items', {
-      'isDeleted': 1,
-      'isSynced': 0,
-      'updatedAt': DateTime.now().toIso8601String(),
-    }, where: 'billId = ?', whereArgs: [billId]);
-  }
 
   Future<int> deleteBillItem(int id) async {
     final db = await database;
-
     final result = await db.update('bill_items', {
       'isDeleted': 1,
       'isSynced': 0,
-      'updatedAt': DateTime.now().toIso8601String(), // 4️⃣ Add timestamp
+      'updatedAt': DateTime.now().toIso8601String(),
     }, where: 'id = ?', whereArgs: [id]);
 
     if (result > 0) {
@@ -1589,84 +1189,24 @@ class DatabaseHelper {
         _autoSyncToFirebase('bill_items', id, 'delete');
       });
     }
-
     return result;
   }
 
-  Future<void> updateBillItemQuantity(int itemId, double qty) async {
-    final dbClient = await database;
-    final result = await dbClient.update(
-      'bill_items',
-      {
-        'quantity': qty,
-        'isSynced': 0,
-        'updatedAt': DateTime.now().toIso8601String() // 4️⃣ Add timestamp
-      },
-      where: 'id = ?',
-      whereArgs: [itemId],
-    );
+  // ========================================================================
+  // LEDGER - CRITICAL
+  // ========================================================================
 
-    if (result > 0) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        _autoSyncToFirebase('bill_items', itemId, 'update');
-      });
-    }
-  }
-
-  Future<void> updateBillItemQuantityWithStock(int itemId, double newQty) async {
-    final dbClient = await database;
-
-    final currentItemMap = await dbClient.query(
-      'bill_items',
-      where: 'id = ? AND isDeleted = 0',
-      whereArgs: [itemId],
-      limit: 1,
-    );
-    if (currentItemMap.isEmpty) return;
-
-    final oldQty = (currentItemMap.first['quantity'] as num).toDouble();
-    final productId = currentItemMap.first['productId'] as int;
-    final diff = newQty - oldQty;
-
-    await dbClient.update(
-      'bill_items',
-      {
-        'quantity': newQty,
-        'isSynced': 0,
-        'updatedAt': DateTime.now().toIso8601String() // 4️⃣ Add timestamp
-      },
-      where: 'id = ?',
-      whereArgs: [itemId],
-    );
-
-    // Use the improved stock adjustment method
-    final currentStock = await getStock(productId);
-    final newStock = (currentStock - diff).clamp(0, double.infinity) as double;
-    await setStock(productId, newStock);
-
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _autoSyncToFirebase('bill_items', itemId, 'update');
-    });
-  }
-
-  // ---------------------------------------------------------------------------
-  // LEDGER (WITH IMPROVED SYNC)
-  // ---------------------------------------------------------------------------
-
-  Future<int> insertLedgerEntry(LedgerEntry entry) async {
+  Future<List<LedgerEntry>> getAllLedgerEntries() async {
     final db = await database;
-    final updatedEntry = entry.copyWith(
-        isSynced: false,
-        updatedAt: DateTime.now() // 4️⃣ Add timestamp
-    );
+    final rows = await db.query(
+        'ledger', where: 'isDeleted = 0', orderBy: 'date DESC');
+    return rows.map((r) => LedgerEntry.fromMap(r)).toList();
+  }
 
-    final id = await db.insert('ledger', updatedEntry.toMap());
-
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _autoSyncToFirebase('ledger', id, 'insert');
-    });
-
-    return id;
+  Future<List<Map<String, dynamic>>> getLedgerEntries() async {
+    final dbClient = await database;
+    return dbClient.query(
+        'ledger', where: 'isDeleted = 0', orderBy: 'date DESC');
   }
 
   Future<List<LedgerEntry>> getLedgerEntriesByClient(int clientId) async {
@@ -1676,6 +1216,39 @@ class DatabaseHelper {
         whereArgs: [clientId],
         orderBy: 'date ASC');
     return rows.map((r) => LedgerEntry.fromMap(r)).toList();
+  }
+
+  Future<double> getClientBalance(int clientId) async {
+    final db = await database;
+    final result = await db.rawQuery('''
+      SELECT 
+        SUM(CASE WHEN type = 'bill' THEN amount ELSE 0 END) as totalBills,
+        SUM(CASE WHEN type = 'payment' THEN amount ELSE 0 END) as totalPayments
+      FROM ledger
+      WHERE clientId = ? AND isDeleted = 0
+    ''', [clientId]);
+
+    if (result.isEmpty) return 0.0;
+    final totalBills = (result.first['totalBills'] as num?)?.toDouble() ?? 0.0;
+    final totalPayments = (result.first['totalPayments'] as num?)?.toDouble() ??
+        0.0;
+    return totalBills - totalPayments;
+  }
+
+  Future<int> insertLedgerEntry(LedgerEntry entry) async {
+    final db = await database;
+    final updatedEntry = entry.copyWith(
+        isSynced: false,
+        updatedAt: DateTime.now()
+    );
+
+    final id = await db.insert('ledger', updatedEntry.toMap());
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _autoSyncToFirebase('ledger', id, 'insert');
+    });
+
+    return id;
   }
 
   Future<int> insertCashPayment({
@@ -1691,7 +1264,7 @@ class DatabaseHelper {
       'date': DateTime.now().toIso8601String(),
       'note': note ?? 'Cash Payment',
       'isSynced': 0,
-      'updatedAt': DateTime.now().toIso8601String(), // 4️⃣ Add timestamp
+      'updatedAt': DateTime.now().toIso8601String(),
     });
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -1701,13 +1274,31 @@ class DatabaseHelper {
     return id;
   }
 
+  Future<int> updateLedgerEntry(LedgerEntry entry) async {
+    final db = await database;
+    final updatedEntry = entry.copyWith(
+      isSynced: false,
+      updatedAt: DateTime.now(),
+    );
+
+    final result = await db.update('ledger', updatedEntry.toMap(),
+        where: 'id = ?', whereArgs: [entry.id]);
+
+    if (result > 0 && entry.id != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _autoSyncToFirebase('ledger', entry.id!, 'update');
+      });
+    }
+
+    return result;
+  }
+
   Future<int> deleteLedgerEntry(int id) async {
     final db = await database;
-
     final result = await db.update('ledger', {
       'isDeleted': 1,
       'isSynced': 0,
-      'updatedAt': DateTime.now().toIso8601String(), // 4️⃣ Add timestamp
+      'updatedAt': DateTime.now().toIso8601String(),
     }, where: 'id = ?', whereArgs: [id]);
 
     if (result > 0) {
@@ -1715,22 +1306,15 @@ class DatabaseHelper {
         _autoSyncToFirebase('ledger', id, 'delete');
       });
     }
-
     return result;
   }
 
-  Future<List<Map<String, dynamic>>> getLedgerEntries() async {
-    final dbClient = await database;
-    return dbClient.query('ledger', where: 'isDeleted = 0', orderBy: 'date DESC');
-  }
-
-  // ---------------------------------------------------------------------------
-  // STOCK HELPERS (UNIFIED MANAGEMENT)
-  // ---------------------------------------------------------------------------
+  // ========================================================================
+  // STOCK
+  // ========================================================================
 
   Future<double> getStock(int productId) async {
     final db = await database;
-    // 2️⃣ Use products table as source of truth
     final res = await db.query('products',
         where: 'id = ? AND isDeleted = 0',
         whereArgs: [productId],
@@ -1742,10 +1326,35 @@ class DatabaseHelper {
     return 0.0;
   }
 
-  Future<void> adjustStock(int productId, double deltaQty) async {
-    final current = await getStock(productId);
-    final double newQty = (current + deltaQty).clamp(0, double.infinity) as double;
-    await setStock(productId, newQty);
+  Future<void> setStock(int productId, double qty) async {
+    final db = await database;
+    await db.transaction((txn) async {
+      await txn.update(
+        'products',
+        {
+          'stock': qty,
+          'updatedAt': DateTime.now().toIso8601String(),
+          'isSynced': 0,
+        },
+        where: 'id = ?',
+        whereArgs: [productId],
+      );
+
+      await txn.insert(
+        'stock',
+        {
+          'productId': productId,
+          'quantity': qty,
+          'isSynced': 0,
+          'updatedAt': DateTime.now().toIso8601String(),
+        },
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+    });
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _autoSyncToFirebase('products', productId, 'update');
+    });
   }
 
   Future<List<Map<String, dynamic>>> getAllStock() async {
@@ -1760,9 +1369,9 @@ class DatabaseHelper {
     ''');
   }
 
-  // ---------------------------------------------------------------------------
-  // DEMAND / PURCHASE ORDERS (WITH IMPROVED SYNC)
-  // ---------------------------------------------------------------------------
+  // ========================================================================
+  // DEMAND
+  // ========================================================================
 
   String _dateOnlyIso(DateTime dt) => dt.toIso8601String().substring(0, 10);
 
@@ -1787,27 +1396,10 @@ class DatabaseHelper {
     return id;
   }
 
-  Future<int> insertDemandEntry({
-    required int batchId,
-    required int clientId,
-    required int productId,
-    required double quantity,
-  }) async {
+  Future<List<Map<String, dynamic>>> getDemandHistory() async {
     final db = await database;
-    final id = await db.insert('demand', {
-      'batchId': batchId,
-      'clientId': clientId,
-      'productId': productId,
-      'quantity': quantity,
-      'date': DateTime.now().toIso8601String(),
-      'isSynced': 0,
-    });
-
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _autoSyncToFirebase('demand', id, 'insert');
-    });
-
-    return id;
+    return db.query(
+        'demand_batch', where: 'isDeleted = 0', orderBy: 'demandDate DESC');
   }
 
   Future<List<Map<String, dynamic>>> getCurrentBatchTotals(int batchId) async {
@@ -1819,26 +1411,6 @@ class DatabaseHelper {
       WHERE d.batchId = ? AND d.isDeleted = 0 AND p.isDeleted = 0
       GROUP BY d.productId
       ORDER BY p.name
-    ''', [batchId]);
-  }
-
-  Future<List<Map<String, dynamic>>> getDemandHistory() async {
-    final db = await database;
-    return db.query('demand_batch', where: 'isDeleted = 0', orderBy: 'demandDate DESC');
-  }
-
-  Future<List<Map<String, dynamic>>> getBatchClientDetails(int batchId) async {
-    final db = await database;
-    return db.rawQuery('''
-      SELECT c.id AS clientId, c.name AS clientName,
-             p.id AS productId, p.name AS productName,
-             SUM(d.quantity) AS qty
-      FROM demand d
-      JOIN clients c ON c.id = d.clientId
-      JOIN products p ON p.id = d.productId
-      WHERE d.batchId = ? AND d.isDeleted = 0 AND c.isDeleted = 0 AND p.isDeleted = 0
-      GROUP BY c.id, p.id
-      ORDER BY c.name, p.name
     ''', [batchId]);
   }
 
@@ -1868,15 +1440,352 @@ class DatabaseHelper {
     ''', [batchId]);
   }
 
+  Future<List<Map<String, dynamic>>> getBatchClientDetails(int batchId) async {
+    final db = await database;
+    return db.rawQuery('''
+      SELECT c.id AS clientId, c.name AS clientName,
+             p.id AS productId, p.name AS productName,
+             SUM(d.quantity) AS qty
+      FROM demand d
+      JOIN clients c ON c.id = d.clientId
+      JOIN products p ON p.id = d.productId
+      WHERE d.batchId = ? AND d.isDeleted = 0 AND c.isDeleted = 0 AND p.isDeleted = 0
+      GROUP BY c.id, p.id
+      ORDER BY c.name, p.name
+    ''', [batchId]);
+  }
+
+  // ========================================================================
+  // SYNC
+  // ========================================================================
+
+  Future<bool> forceSyncToFirebase() async {
+    if (!await canSync) {
+      debugPrint('Cannot sync: no connection or not authenticated');
+      return false;
+    }
+
+    try {
+      debugPrint('Starting manual force sync...');
+      final tables = [
+        'clients',
+        'products',
+        'bills',
+        'bill_items',
+        'ledger',
+        'demand_batch',
+        'demand'
+      ];
+
+      for (final table in tables) {
+        final unsynced = await getUnsynced(table);
+        debugPrint('Syncing ${unsynced.length} unsynced records from $table');
+
+        for (final row in unsynced) {
+          final id = row['id'] as int;
+          await _autoSyncToFirebase(table, id, 'update');
+        }
+      }
+
+      debugPrint('Manual sync completed');
+      return true;
+    } catch (e) {
+      debugPrint('Manual sync failed: $e');
+      return false;
+    }
+  }
+
+  Future<Map<String, dynamic>> getSyncStatus() async {
+    final db = await database;
+    final Map<String, dynamic> status = {};
+    final tables = [
+      'clients',
+      'products',
+      'bills',
+      'bill_items',
+      'ledger',
+      'demand_batch',
+      'demand'
+    ];
+
+    for (final table in tables) {
+      final totalCount = Sqflite.firstIntValue(
+          await db.rawQuery('SELECT COUNT(*) FROM $table WHERE isDeleted = 0')
+      ) ?? 0;
+
+      final unsyncedCount = Sqflite.firstIntValue(
+          await db.rawQuery(
+              'SELECT COUNT(*) FROM $table WHERE isDeleted = 0 AND isSynced = 0')
+      ) ?? 0;
+
+      status[table] = {
+        'total': totalCount,
+        'unsynced': unsyncedCount,
+        'syncedPercent': totalCount > 0 ? ((totalCount - unsyncedCount) /
+            totalCount * 100).round() : 100,
+      };
+    }
+
+    status['canSync'] = await canSync;
+    status['isAuthenticated'] = _uid != null;
+    return status;
+  }
+
+  // ========================================================================
+  // REPORTING
+  // ========================================================================
+
+  Future<Map<String, dynamic>> getDashboardStats() async {
+    final clientsCount = await getClientsCount();
+    final productsCount = await getProductsCount();
+    final billsCount = await getBillsCount();
+    final totalRevenue = await getTotalBillsAmount();
+
+    final db = await database;
+
+    final pendingPayments = await db.rawQuery('''
+      SELECT SUM(amount) as total
+      FROM ledger
+      WHERE type = 'bill' AND isDeleted = 0
+    ''');
+
+    final lowStockCount = await db.rawQuery('''
+      SELECT COUNT(*) as count
+      FROM products
+      WHERE stock < 10 AND isDeleted = 0
+    ''');
+
+    return {
+      'clientsCount': clientsCount,
+      'productsCount': productsCount,
+      'billsCount': billsCount,
+      'totalRevenue': totalRevenue,
+      'pendingPayments': (pendingPayments.first['total'] as num?)?.toDouble() ??
+          0.0,
+      'lowStockCount': (lowStockCount.first['count'] as int?) ?? 0,
+    };
+  }
+
+  Future<List<Map<String, dynamic>>> getOutstandingBalances() async {
+    final db = await database;
+    return db.rawQuery('''
+      SELECT c.id, c.name, c.phone,
+             SUM(CASE WHEN l.type = 'bill' THEN l.amount ELSE 0 END) as totalBills,
+             SUM(CASE WHEN l.type = 'payment' THEN l.amount ELSE 0 END) as totalPayments,
+             (SUM(CASE WHEN l.type = 'bill' THEN l.amount ELSE 0 END) - 
+              SUM(CASE WHEN l.type = 'payment' THEN l.amount ELSE 0 END)) as balance
+      FROM clients c
+      LEFT JOIN ledger l ON l.clientId = c.id AND l.isDeleted = 0
+      WHERE c.isDeleted = 0
+      GROUP BY c.id, c.name, c.phone
+      HAVING balance > 0
+      ORDER BY balance DESC
+    ''');
+  }
+
+  // ========================================================================
+  // UTILITIES
+  // ========================================================================
+
+  Future<bool> clientExists(int id) async {
+    final db = await database;
+    final result = await db.query('clients', where: 'id = ? AND isDeleted = 0',
+        whereArgs: [id],
+        limit: 1);
+    return result.isNotEmpty;
+  }
+
+  Future<bool> productExists(int id) async {
+    final db = await database;
+    final result = await db.query('products', where: 'id = ? AND isDeleted = 0',
+        whereArgs: [id],
+        limit: 1);
+    return result.isNotEmpty;
+  }
+
+  Future<bool> billExists(int id) async {
+    final db = await database;
+    final result = await db.query(
+        'bills', where: 'id = ? AND isDeleted = 0', whereArgs: [id], limit: 1);
+    return result.isNotEmpty;
+  }
+
+  Future<List<Map<String, dynamic>>> rawQuery(String sql,
+      [List<Object?>? args]) async {
+    final dbClient = await database;
+    return dbClient.rawQuery(sql, args);
+  }
+
+  Future<void> close() async {
+    if (_db != null) {
+      await _db!.close();
+      _db = null;
+    }
+  } // Add these methods to your DatabaseHelper class
+
+  Future<void> adjustStock(int productId, double deltaQty) async {
+    final current = await getStock(productId);
+    final double newQty = (current + deltaQty)
+        .clamp(0, double.infinity)
+        .toDouble();
+    await setStock(productId, newQty);
+  }
+
+  Future<int> updateProductStock(int productId, double newQty) async {
+    final db = await database;
+    final result = await db.update(
+      'products',
+      {
+        'stock': newQty,
+        'updatedAt': DateTime.now().toIso8601String(),
+        'isSynced': 0,
+      },
+      where: 'id = ?',
+      whereArgs: [productId],
+    );
+
+    if (result > 0) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _autoSyncToFirebase('products', productId, 'update');
+      });
+    }
+
+    return result;
+  }
+
+  Future<void> updateBillItemQuantityWithStock(int itemId,
+      double newQty) async {
+    final dbClient = await database;
+
+    final currentItemMap = await dbClient.query(
+      'bill_items',
+      where: 'id = ? AND isDeleted = 0',
+      whereArgs: [itemId],
+      limit: 1,
+    );
+    if (currentItemMap.isEmpty) return;
+
+    final oldQty = (currentItemMap.first['quantity'] as num).toDouble();
+    final productId = currentItemMap.first['productId'] as int;
+    final diff = newQty - oldQty;
+
+    await dbClient.update(
+      'bill_items',
+      {
+        'quantity': newQty,
+        'isSynced': 0,
+        'updatedAt': DateTime.now().toIso8601String()
+      },
+      where: 'id = ?',
+      whereArgs: [itemId],
+    );
+
+    final currentStock = await getStock(productId);
+    final newStock = (currentStock - diff).clamp(0, double.infinity).toDouble();
+    await setStock(productId, newStock);
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _autoSyncToFirebase('bill_items', itemId, 'update');
+    });
+  }
+
+  Future<int> updateBillWithItems(Bill bill, List<BillItem> items) async {
+    final db = await database;
+
+    return await db.transaction<int>((txn) async {
+      // 1️⃣ Update bill
+      final updatedBill = bill.copyWith(
+        isSynced: false,
+        updatedAt: DateTime.now(),
+      );
+      final result = await txn.update(
+        'bills',
+        updatedBill.toMap(),
+        where: 'id = ?',
+        whereArgs: [bill.id],
+      );
+
+      // 2️⃣ Delete old bill items (soft delete)
+      await txn.update(
+        'bill_items',
+        {
+          'isDeleted': 1,
+          'isSynced': 0,
+          'updatedAt': DateTime.now().toIso8601String(),
+        },
+        where: 'billId = ?',
+        whereArgs: [bill.id],
+      );
+
+      // 3️⃣ Insert new bill items + adjust stock
+      for (var item in items) {
+        final itemMap = item.copyWith(
+          billId: bill.id,
+          isSynced: false,
+          updatedAt: DateTime.now(),
+        ).toMap();
+
+        final itemId = await txn.insert('bill_items', itemMap);
+
+        // Stock update
+        final stockRow = await txn.query(
+          'products',
+          columns: ['stock'],
+          where: 'id = ?',
+          whereArgs: [item.productId],
+        );
+
+        double existingQty =
+        stockRow.isNotEmpty ? (stockRow.first['stock'] as num).toDouble() : 0;
+
+        final newQty = (existingQty - item.quantity).clamp(0, double.infinity);
+
+        await txn.update(
+          'products',
+          {
+            'stock': newQty,
+            'isSynced': 0,
+            'updatedAt': DateTime.now().toIso8601String(),
+          },
+          where: 'id = ?',
+          whereArgs: [item.productId],
+        );
+
+        // Auto-sync
+        _autoSyncToFirebase('bill_items', itemId, 'insert');
+        _autoSyncToFirebase('products', item.productId, 'update');
+      }
+
+      // 4️⃣ Update ledger entry for this bill
+      await txn.update(
+        'ledger',
+        {
+          'amount': bill.totalAmount,
+          'isSynced': 0,
+          'updatedAt': DateTime.now().toIso8601String(),
+        },
+        where: 'clientId = ? AND type = ? AND date = ?',
+        whereArgs: [bill.clientId, 'bill', bill.date.toIso8601String()],
+      );
+
+      // 5️⃣ Auto-sync bill
+      _autoSyncToFirebase('bills', bill.id!, 'update');
+
+      return result;
+    });
+  }
+
+
+
   Future<int?> closeBatch(int batchId, {bool createNextDay = false}) async {
     final db = await database;
 
     final productTotals = await db.rawQuery('''
-      SELECT productId, SUM(quantity) AS totalQty
-      FROM demand
-      WHERE batchId = ? AND isDeleted = 0
-      GROUP BY productId
-    ''', [batchId]);
+    SELECT productId, SUM(quantity) AS totalQty
+    FROM demand
+    WHERE batchId = ? AND isDeleted = 0
+    GROUP BY productId
+  ''', [batchId]);
 
     for (final row in productTotals) {
       final pid = row['productId'] as int;
@@ -1886,11 +1795,7 @@ class DatabaseHelper {
 
     await db.update(
       'demand_batch',
-      {
-        'closed': 1,
-        'isSynced': 0,
-        // Note: No updatedAt for demand_batch as it doesn't have the column
-      },
+      {'closed': 1, 'isSynced': 0},
       where: 'id = ?',
       whereArgs: [batchId],
     );
@@ -1905,122 +1810,50 @@ class DatabaseHelper {
     }
     return null;
   }
-
-  // ---------------------------------------------------------------------------
-  // SYNC HELPERS
-  // ---------------------------------------------------------------------------
-
-  Future<void> markRowSynced(String table, int id) async {
-    final dbClient = await database;
-    await dbClient.update(
-      table,
-      {'isSynced': 1},
-      where: 'id = ?',
-      whereArgs: [id],
-    );
-  }
-
-  Future<void> saveProductsToLocal(List<Product> products) async {
-    final dbClient = await database;
-    final batch = dbClient.batch();
-    for (final p in products) {
-      batch.insert(
-        'products',
-        p.toMap(),
-        conflictAlgorithm: ConflictAlgorithm.replace,
-      );
-    }
-    await batch.commit(noResult: true);
-  }
-
-  // ---------------------------------------------------------------------------
-  // UTILITY
-  // ---------------------------------------------------------------------------
-
-  Future<List<Map<String, dynamic>>> rawQuery(String sql, [List<Object?>? args]) async {
-    final dbClient = await database;
-    return dbClient.rawQuery(sql, args);
-  }
-
-  /// Get sync status for monitoring
-  Future<Map<String, dynamic>> getSyncStatus() async {
+  // ========================================================================
+// DELETE BILL COMPLETELY
+// ========================================================================
+  Future<void> deleteBillCompletely(int billId) async {
     final db = await database;
-    final Map<String, dynamic> status = {};
+    await db.transaction((txn) async {
+      // Delete all bill items
+      await txn.delete('bill_items', where: 'billId = ?', whereArgs: [billId]);
 
-    final tables = ['clients', 'products', 'bills', 'bill_items', 'ledger', 'demand_batch', 'demand'];
+      // Delete the bill itself
+      await txn.delete('bills', where: 'id = ?', whereArgs: [billId]);
 
-    for (final table in tables) {
-      final totalCount = Sqflite.firstIntValue(
-          await db.rawQuery('SELECT COUNT(*) FROM $table WHERE isDeleted = 0')
-      ) ?? 0;
+      // Delete related ledger entries (if any)
+      await txn.delete('ledger', where: 'billId = ?', whereArgs: [billId]);
+    });
 
-      final unsyncedCount = Sqflite.firstIntValue(
-          await db.rawQuery('SELECT COUNT(*) FROM $table WHERE isDeleted = 0 AND isSynced = 0')
-      ) ?? 0;
-
-      status[table] = {
-        'total': totalCount,
-        'unsynced': unsyncedCount,
-        'syncedPercent': totalCount > 0 ? ((totalCount - unsyncedCount) / totalCount * 100).round() : 100,
-      };
-    }
-
-    status['canSync'] = await canSync;
-    status['isAuthenticated'] = _uid != null;
-
-    return status;
+    // Sync deletion to Firebase
+    _autoSyncToFirebase('bills', billId, 'delete');
   }
 
-  /// Clean up old deleted records (maintenance)
-  Future<void> cleanupOldDeletedRecords({int daysOld = 30}) async {
+// ========================================================================
+// INSERT DEMAND ENTRY
+// ========================================================================
+  Future<int> insertDemandEntry({
+    required int batchId,
+    required int clientId,
+    required int productId,
+    required double quantity,
+  }) async {
     final db = await database;
-    final cutoff = DateTime.now().subtract(Duration(days: daysOld)).toIso8601String();
+    final id = await db.insert('demand', {
+      'batchId': batchId,
+      'clientId': clientId,
+      'productId': productId,
+      'quantity': quantity,
+      'isDeleted': 0,
+      'isSynced': 0,
+      'updatedAt': DateTime.now().toIso8601String(),
+    });
 
-    final tables = ['clients', 'products', 'bills', 'bill_items', 'ledger', 'demand_batch', 'demand'];
+    // Sync to Firebase
+    _autoSyncToFirebase('demand', id, 'insert');
 
-    for (final table in tables) {
-      final deleted = await db.delete(
-        table,
-        where: 'isDeleted = 1 AND updatedAt < ?',
-        whereArgs: [cutoff],
-      );
-
-      if (deleted > 0) {
-        debugPrint('🧹 Cleaned $deleted old deleted records from $table');
-      }
-    }
+    return id;
   }
 
-  /// Reset sync status for recovery
-  Future<void> resetSyncStatus() async {
-    final db = await database;
-    final tables = ['clients', 'products', 'bills', 'bill_items', 'ledger', 'demand_batch', 'demand'];
-
-    for (final table in tables) {
-      await db.update(
-        table,
-        {'isSynced': 0},
-        where: 'isDeleted = 0',
-      );
-    }
-
-    debugPrint('🔄 Sync status reset for all tables');
-  }
-  // …last existing method…
-
-  Future<Product?> getProductById(int productId) async {
-    final db = await database;
-    final rows = await db.query(
-      'products',
-      where: 'id = ? AND isDeleted = 0',
-      whereArgs: [productId],
-      limit: 1,
-    );
-    if (rows.isEmpty) return null;
-    return Product.fromMap(rows.first);
-  }
-
-} // end of class
-
-
-
+}

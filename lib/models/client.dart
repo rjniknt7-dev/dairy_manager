@@ -1,47 +1,50 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:uuid/uuid.dart';
 
 class Client {
-  final int? id;               // Local SQLite ID
+  final int? id;
+  final String firestoreId;
   final String name;
   final String phone;
   final String address;
-  final String? firestoreId;   // Firestore document ID
-  final DateTime? updatedAt;   // Last update time
-  final bool isSynced;         // Tracks if this record is synced to cloud
+  final DateTime createdAt;
+  final DateTime updatedAt;
+  final bool isSynced;
+  final bool isDeleted;
 
-  const Client({
+  Client({
     this.id,
+    String? firestoreId,
     required this.name,
     required this.phone,
     required this.address,
-    this.firestoreId,
-    this.updatedAt,
+    DateTime? createdAt,
+    DateTime? updatedAt,
     this.isSynced = false,
-  });
+    this.isDeleted = false,
+  })  : firestoreId = firestoreId ?? const Uuid().v4(),
+        createdAt = createdAt ?? DateTime.now(),
+        updatedAt = updatedAt ?? DateTime.now();
 
-  /* ------------ Conversions ------------ */
-
-  /// Local SQLite representation
   Map<String, dynamic> toMap() => {
-    'id': id,
-    'name': name,
-    'phone': phone,
-    'address': address,
-    'updatedAt': updatedAt?.toIso8601String(),
-    'isSynced': isSynced ? 1 : 0,
+    if (id != null) 'id': id,
     'firestoreId': firestoreId,
-  };
-
-  /// Firestore representation
-  Map<String, dynamic> toFirestore() => {
-    'id': id,
     'name': name,
     'phone': phone,
     'address': address,
-    'updatedAt': FieldValue.serverTimestamp(),
+    'updatedAt': updatedAt.toIso8601String(),
+    'isSynced': isSynced ? 1 : 0,
+    'isDeleted': isDeleted ? 1 : 0,
   };
 
-  /// From Firestore document
+  Map<String, dynamic> toFirestore() => {
+    'name': name,
+    'phone': phone,
+    'address': address,
+    'createdAt': Timestamp.fromDate(createdAt),
+    'updatedAt': Timestamp.fromDate(updatedAt),
+  };
+
   factory Client.fromFirestore(DocumentSnapshot doc) {
     final data = doc.data() as Map<String, dynamic>? ?? {};
     return Client(
@@ -50,65 +53,62 @@ class Client {
       name: (data['name'] ?? '') as String,
       phone: (data['phone'] ?? '') as String,
       address: (data['address'] ?? '') as String,
-      updatedAt: data['updatedAt'] is Timestamp
-          ? (data['updatedAt'] as Timestamp).toDate()
-          : null,
+      createdAt: _parseTimestamp(data['createdAt']),
+      updatedAt: _parseTimestamp(data['updatedAt']),
       isSynced: true,
+      isDeleted: false,
     );
   }
 
-  /// From local SQLite row
   factory Client.fromMap(Map<String, dynamic> map) => Client(
     id: map['id'] as int?,
+    firestoreId: map['firestoreId'] as String?,
     name: (map['name'] ?? '') as String,
     phone: (map['phone'] ?? '') as String,
     address: (map['address'] ?? '') as String,
-    updatedAt: map['updatedAt'] != null
-        ? DateTime.tryParse(map['updatedAt'].toString())
-        : null,
-    firestoreId: map['firestoreId'] as String?,
+    createdAt: map['createdAt'] != null
+        ? DateTime.parse(map['createdAt'] as String)
+        : DateTime.parse(map['updatedAt'] as String),
+    updatedAt: DateTime.parse(map['updatedAt'] as String),
     isSynced: (map['isSynced'] ?? 0) == 1,
+    isDeleted: (map['isDeleted'] ?? 0) == 1,
   );
 
-  /* ------------ Utilities ------------ */
+  static DateTime _parseTimestamp(dynamic value) {
+    if (value is Timestamp) return value.toDate();
+    if (value is String) return DateTime.parse(value);
+    return DateTime.now();
+  }
 
-  /// Create a modified copy
   Client copyWith({
     int? id,
+    String? firestoreId,
     String? name,
     String? phone,
     String? address,
-    String? firestoreId,
+    DateTime? createdAt,
     DateTime? updatedAt,
     bool? isSynced,
+    bool? isDeleted,
   }) {
     return Client(
       id: id ?? this.id,
+      firestoreId: firestoreId ?? this.firestoreId,
       name: name ?? this.name,
       phone: phone ?? this.phone,
       address: address ?? this.address,
-      firestoreId: firestoreId ?? this.firestoreId,
+      createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
       isSynced: isSynced ?? this.isSynced,
+      isDeleted: isDeleted ?? this.isDeleted,
     );
   }
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
-          other is Client &&
-              runtimeType == other.runtimeType &&
-              id == other.id &&
-              name == other.name &&
-              phone == other.phone &&
-              address == other.address &&
-              firestoreId == other.firestoreId;
+          other is Client && runtimeType == other.runtimeType && firestoreId == other.firestoreId;
 
   @override
-  int get hashCode =>
-      id.hashCode ^
-      name.hashCode ^
-      phone.hashCode ^
-      address.hashCode ^
-      (firestoreId?.hashCode ?? 0);
+  int get hashCode => firestoreId.hashCode;
 }

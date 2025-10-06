@@ -1,7 +1,10 @@
-// Updated main.dart with login route
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:provider/provider.dart';
+
+// Services
+import 'services/connectivity_service.dart';
 
 // Your screens
 import 'screens/home_screen.dart';
@@ -20,7 +23,15 @@ import 'screens/reports_screen.dart';
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Firebase.initializeApp();
-  runApp(const DairyApp());
+
+  runApp(
+    MultiProvider(
+      providers: [
+        ChangeNotifierProvider(create: (_) => ConnectivityService()),
+      ],
+      child: const DairyApp(),
+    ),
+  );
 }
 
 class DairyApp extends StatelessWidget {
@@ -54,7 +65,7 @@ class DairyApp extends StatelessWidget {
 
       // Named routes for the rest of the app
       routes: {
-        '/login': (context) => const LoginScreen(),  // Add this route
+        '/login': (context) => const LoginScreen(),
         '/reports': (context) => const ReportsScreen(),
         '/clients': (context) => const ClientScreen(),
         '/products': (context) => const ProductScreen(),
