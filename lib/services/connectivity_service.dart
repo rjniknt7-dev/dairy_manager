@@ -1,3 +1,4 @@
+// lib/services/connectivity_service.dart
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/foundation.dart';
 
@@ -7,16 +8,18 @@ class ConnectivityService extends ChangeNotifier {
 
   ConnectivityService() {
     _checkInitialConnection();
-    Connectivity().onConnectivityChanged.listen((result) {
-      _isOnline = result != ConnectivityResult.none;
-      notifyListeners(); // informs UI about change
+
+    // ✅ FIX: Handle new API (returns List<ConnectivityResult>)
+    Connectivity().onConnectivityChanged.listen((List<ConnectivityResult> results) {
+      _isOnline = results.isNotEmpty && !results.contains(ConnectivityResult.none);
+      notifyListeners();
       debugPrint('Connectivity changed: $_isOnline');
     });
   }
 
   Future<void> _checkInitialConnection() async {
-    final result = await Connectivity().checkConnectivity();
-    _isOnline = result != ConnectivityResult.none;
+    final results = await Connectivity().checkConnectivity();
+    _isOnline = results.isNotEmpty && !results.contains(ConnectivityResult.none);
     notifyListeners();
   }
 }

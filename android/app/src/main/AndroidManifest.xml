@@ -1,22 +1,24 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.rajni.dairymanager">
 
-    <!-- Essential permissions for your app -->
+    <!-- Internet and Network -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
 
-    <!-- Storage permissions for PDF generation and sharing -->
-    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
-    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
-
-    <!-- For Android 13+ (API 33+) - Granular media permissions -->
-    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
-
-    <!-- Wake lock for sync operations -->
+    <!-- Wake lock for background sync -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
-    <!-- Notification permissions for sync status -->
+    <!-- Storage permissions -->
+    <!-- For Android 13+ (API 33+) -->
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+    <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
+
+    <!-- For older Android versions -->
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+
+    <!-- Notification permission for Android 13+ -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
@@ -28,15 +30,13 @@
         android:requestLegacyExternalStorage="true"
         android:usesCleartextTraffic="true">
 
-        <!-- Firebase configuration -->
+        <!-- Firebase default settings -->
         <meta-data
             android:name="com.google.firebase.messaging.default_notification_icon"
             android:resource="@mipmap/ic_launcher" />
-
         <meta-data
             android:name="com.google.firebase.messaging.default_notification_color"
             android:resource="@color/colorAccent" />
-
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
@@ -54,7 +54,7 @@
             </intent-filter>
         </activity>
 
-        <!-- Provider for sharing files (PDFs) -->
+        <!-- File provider for PDF sharing -->
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"
@@ -65,18 +65,14 @@
                 android:resource="@xml/file_paths" />
         </provider>
 
-        <!-- Don't delete the meta-data below.
-             This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
-        <meta-data
-            android:name="flutterEmbedding"
-            android:value="2" />
     </application>
 
-    <!-- Queries for file sharing -->
+    <!-- Queries for sharing files (PDFs) -->
     <queries>
         <intent>
             <action android:name="android.intent.action.VIEW" />
             <data android:mimeType="application/pdf" />
         </intent>
     </queries>
+
 </manifest>

@@ -1,4 +1,4 @@
-// lib/screens/history_screen.dart
+// lib/screens/history_screen.dart - v2.0 (Smart & Robust)
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
@@ -25,7 +25,7 @@ class HistoryScreen extends StatefulWidget {
 
 class _HistoryScreenState extends State<HistoryScreen>
     with TickerProviderStateMixin {
-  final FirebaseSyncService _backup = FirebaseSyncService();
+  final FirebaseSyncService _syncService = FirebaseSyncService();
   final InvoiceService _invoiceService = InvoiceService();
   final _dateFmt = DateFormat('MMM dd, yyyy');
   final _currencyFormat = NumberFormat.currency(symbol: '₹', decimalDigits: 2);
@@ -39,74 +39,56 @@ class _HistoryScreenState extends State<HistoryScreen>
   String _searchQuery = '';
   String _selectedFilter = 'all';
 
-  // Animation controllers
-  late AnimationController _fadeController;
-  late AnimationController _slideController;
-  late Animation<double> _fadeAnimation;
-  late Animation<Offset> _slideAnimation;
+  late AnimationController _listAnimationController;
 
   @override
   void initState() {
     super.initState();
-    _initializeAnimations();
+    _listAnimationController = AnimationController(
+      duration: const Duration(milliseconds: 500),
+      vsync: this,
+    );
     _loadData();
-  }
-
-  void _initializeAnimations() {
-    _fadeController = AnimationController(
-      duration: const Duration(milliseconds: 600),
-      vsync: this,
-    );
-    _slideController = AnimationController(
-      duration: const Duration(milliseconds: 800),
-      vsync: this,
-    );
-
-    _fadeAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
-      CurvedAnimation(parent: _fadeController, curve: Curves.easeOut),
-    );
-    _slideAnimation = Tween<Offset>(
-      begin: const Offset(0, 0.3),
-      end: Offset.zero,
-    ).animate(CurvedAnimation(parent: _slideController, curve: Curves.easeOut));
   }
 
   @override
   void dispose() {
-    _fadeController.dispose();
-    _slideController.dispose();
+    _listAnimationController.dispose();
     super.dispose();
   }
 
   Future<void> _loadData() async {
+    if (!mounted) return;
     setState(() => _isLoading = true);
 
     try {
       final db = DatabaseHelper();
-      final clients = await db.getClients();
-      final products = await db.getProducts();
+      // Fetch all data in parallel for speed
+      final results = await Future.wait([
+        db.getBills(),
+        db.getClients(),
+        db.getProducts(),
+      ]);
 
-      final dbInstance = await db.database;
-      final billsData = await dbInstance.query(
-        'bills',
-        where: 'isDeleted = 0',
-        orderBy: 'date DESC',
-      );
+      final billsData = results[0] as List<Map<String, dynamic>>;
+      final clientsData = results[1] as List<Client>;
+      final productsData = results[2] as List<Product>;
 
-      setState(() {
-        _bills = billsData.map((e) => Bill.fromMap(e)).toList();
-        _filteredBills = _bills;
-        _clients = {for (final c in clients) c.id!: c};
-        _products = {for (final p in products) p.id!: p};
-        _isLoading = false;
-      });
-
-      // Start animations
-      _fadeController.forward();
-      _slideController.forward();
+      if (mounted) {
+        setState(() {
+          _bills = billsData.map((e) => Bill.fromMap(e)).toList();
+          _clients = {for (final c in clientsData) c.id!: c};
+          _products = {for (final p in productsData) p.id!: p};
+          _isLoading = false;
+        });
+        _filterBills(); // Apply initial filter
+        _listAnimationController.forward(from: 0.0);
+      }
     } catch (e) {
-      setState(() => _isLoading = false);
-      _showErrorSnackBar('Failed to load billing history: $e');
+      if (mounted) {
+        setState(() => _isLoading = false);
+        _showErrorSnackBar('Failed to load history: $e');
+      }
     }
   }
 
@@ -115,29 +97,28 @@ class _HistoryScreenState extends State<HistoryScreen>
       _filteredBills = _bills.where((bill) {
         final client = _clients[bill.clientId];
         final clientName = client?.name.toLowerCase() ?? '';
-
         final matchesSearch = _searchQuery.isEmpty ||
             clientName.contains(_searchQuery.toLowerCase()) ||
             bill.id.toString().contains(_searchQuery);
 
-        bool matchesFilter = true;
+        bool matchesFilter;
         switch (_selectedFilter) {
           case 'paid':
-            matchesFilter = bill.paidAmount >= bill.totalAmount;
+            matchesFilter = (bill.totalAmount - bill.paidAmount).abs() < 0.01;
             break;
           case 'pending':
-            matchesFilter = bill.paidAmount < bill.totalAmount;
+            matchesFilter = (bill.totalAmount - bill.paidAmount).abs() >= 0.01;
             break;
           case 'today':
             final today = DateTime.now();
-            matchesFilter = bill.date.year == today.year &&
-                bill.date.month == today.month &&
-                bill.date.day == today.day;
+            matchesFilter = bill.date.year == today.year && bill.date.month == today.month && bill.date.day == today.day;
             break;
           case 'week':
             final weekAgo = DateTime.now().subtract(const Duration(days: 7));
             matchesFilter = bill.date.isAfter(weekAgo);
             break;
+          default: // 'all'
+            matchesFilter = true;
         }
 
         return matchesSearch && matchesFilter;
@@ -145,59 +126,34 @@ class _HistoryScreenState extends State<HistoryScreen>
     });
   }
 
-  Future<void> _showBillItems(Bill bill) async {
-    Navigator.push(
+  Future<void> _navigateToDetails(Bill bill) async {
+    final result = await Navigator.push<bool>(
       context,
-      PageRouteBuilder(
-        pageBuilder: (context, animation, _) => BillDetailsScreen(billId: bill.id!),
-        transitionsBuilder: (context, animation, _, child) {
-          return SlideTransition(
-            position: Tween<Offset>(
-              begin: const Offset(1.0, 0.0),
-              end: Offset.zero,
-            ).animate(animation),
-            child: child,
-          );
-        },
-      ),
+      MaterialPageRoute(builder: (context) => BillDetailsScreen(billId: bill.id!)),
     );
+    if (result == true) _loadData();
   }
 
+  Future<void> _navigateToEdit(Bill bill) async {
+    final result = await Navigator.push<bool>(
+      context,
+      MaterialPageRoute(builder: (_) => BillingScreen(existingBill: bill)),
+    );
+    if (result == true) _loadData();
+  }
+
+  // ✅ UPDATED: Uses soft delete for safety
   Future<void> _deleteBill(Bill bill) async {
     final confirm = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        title: Row(
-          children: [
-            Container(
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color: Colors.red.withOpacity(0.1),
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: const Icon(Icons.warning, color: Colors.red),
-            ),
-            const SizedBox(width: 12),
-            const Text('Delete Bill'),
-          ],
-        ),
-        content: Text(
-          'Delete bill for ${_clients[bill.clientId]?.name ?? "Unknown Client"}?\n\nThis action cannot be undone.',
-        ),
+        title: const Text('Delete Bill?'),
+        content: Text('Are you sure you want to delete Invoice #${bill.id}? This action marks the bill as deleted but can be recovered if needed.'),
         actions: [
+          TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Cancel')),
           TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Cancel'),
-          ),
-          ElevatedButton(
             onPressed: () => Navigator.of(context).pop(true),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.red,
-              foregroundColor: Colors.white,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-            ),
-            child: const Text('Delete'),
+            child: const Text('Delete', style: TextStyle(color: Colors.red)),
           ),
         ],
       ),
@@ -207,225 +163,143 @@ class _HistoryScreenState extends State<HistoryScreen>
 
     try {
       final db = DatabaseHelper();
-      await db.deleteBillCompletely(bill.id!);
+      await db.deleteBill(bill.id!);
 
-      // Firestore cleanup
-      try {
-        //await _backup.deleteBill(bill.id!);
-      } catch (e) {
-        _showWarningSnackBar('Deleted offline. Will sync when online.');
-      }
+      _syncService.syncBills().catchError((e) {
+        debugPrint('Background sync for deletion failed: $e');
+      });
 
       HapticFeedback.lightImpact();
-      _showSuccessSnackBar('Bill deleted successfully');
+      _showSuccessSnackBar('Bill moved to trash.');
       _loadData();
     } catch (e) {
       _showErrorSnackBar('Failed to delete bill: $e');
     }
   }
 
-  Future<void> _editBill(Bill bill) async {
-    final result = await Navigator.push(
-      context,
-      PageRouteBuilder(
-        pageBuilder: (context, animation, _) => BillingScreen(existingBill: bill),
-        transitionsBuilder: (context, animation, _, child) {
-          return SlideTransition(
-            position: Tween<Offset>(
-              begin: const Offset(1.0, 0.0),
-              end: Offset.zero,
-            ).animate(animation),
-            child: child,
-          );
-        },
-      ),
-    );
-
-    if (result == true) {
-      _loadData();
-    }
-  }
-
+  // ✅ UPDATED: Calculates and passes all required data for a professional invoice
   Future<void> _exportPdf(Bill bill) async {
+    final client = _clients[bill.clientId];
+    if (client == null) {
+      _showErrorSnackBar('Client information not found for this bill.');
+      return;
+    }
+
     try {
       final db = DatabaseHelper();
-      final items = await db.getBillItems(bill.id!);
-      final client = _clients[bill.clientId];
+      final billItemsData = await db.getBillItems(bill.id!);
 
-      if (client == null) {
-        if (!mounted) return;
-        _showErrorSnackBar('Client information not found');
-        return;
-      }
-
-      final billItems = items.map((item) {
+      final pdfItems = billItemsData.map((item) {
         final product = _products[item.productId];
-        return {
-          'name': product?.name ?? 'Unknown Product',
-          'qty': item.quantity,
-          'price': item.price,
-          'gst': null,
-        };
+        return {'name': product?.name ?? 'Unknown', 'qty': item.quantity, 'price': item.price};
       }).toList();
+
+      final totalClientBalance = await db.getClientBalance(client.id!);
+      final thisBillBalance = bill.totalAmount - bill.paidAmount;
+      final previousBalance = totalClientBalance - thisBillBalance;
 
       final pdfBytes = await _invoiceService.buildPdf(
         customerName: client.name,
         invoiceNo: 'INV-${bill.id}',
         date: bill.date,
-        items: billItems,
-        receivedAmount: bill.paidAmount,
+        items: pdfItems,
+        billTotal: bill.totalAmount,
+        paidForThisBill: bill.paidAmount,
+        previousBalance: previousBalance,
+        currentBalance: totalClientBalance,
       );
 
       final dir = await getTemporaryDirectory();
       final file = File('${dir.path}/invoice_${bill.id}.pdf');
       await file.writeAsBytes(pdfBytes);
 
-      if (!mounted) return;
-      await Share.shareXFiles([XFile(file.path)], text: 'Invoice PDF');
+      await Share.shareXFiles([XFile(file.path)], text: 'Invoice for ${client.name}');
 
-      if (!mounted) return;
-      _showSuccessSnackBar('Invoice exported successfully');
-    } catch (e) {
-      if (!mounted) return;
-      _showErrorSnackBar('Failed to export PDF: $e');
+    } catch (e, stackTrace) {
+      debugPrint('PDF Export Error: $e\n$stackTrace');
+      _showErrorSnackBar('Failed to export PDF: ${e.toString()}');
     }
   }
 
+  void _handleMenuAction(String action, Bill bill) {
+    switch (action) {
+      case 'view': _navigateToDetails(bill); break;
+      case 'pdf': _exportPdf(bill); break;
+      case 'edit': _navigateToEdit(bill); break;
+      case 'delete': _deleteBill(bill); break;
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.grey[50],
-      body: CustomScrollView(
-        slivers: [
-          _buildSliverAppBar(),
-          _buildSliverFilters(),
-
-          // Loading state
-          if (_isLoading)
-            const SliverFillRemaining(
-              child: Center(child: CircularProgressIndicator()),
-            )
-
-          // Empty state
-          else if (_filteredBills.isEmpty)
-            SliverToBoxAdapter(
-              child: AnimatedBuilder(
-                animation: _fadeAnimation,
-                builder: (context, child) {
-                  return Opacity(
-                    opacity: _fadeAnimation.value,
-                    child: Transform.translate(
-                      offset: Offset(0, 50 * (1 - _fadeAnimation.value)),
-                      child: child,
-                    ),
-                  );
-                },
-                child: _buildEmptyState(),
-              ),
-            )
-
-          // Bills list
-          else
-            SliverList(
-              delegate: SliverChildBuilderDelegate(
-                    (context, index) {
-                  final bill = _filteredBills[index];
-                  return _buildBillCard(bill);
-                },
-                childCount: _filteredBills.length,
-              ),
-            ),
+      backgroundColor: Colors.grey.shade100,
+      appBar: AppBar(
+        title: const Text('Billing History'),
+        centerTitle: true,
+        backgroundColor: Colors.white,
+        foregroundColor: Colors.black,
+        elevation: 1,
+      ),
+      body: Column(
+        children: [
+          _buildFilters(),
+          Expanded(
+            child: _isLoading
+                ? const Center(child: CircularProgressIndicator())
+                : _filteredBills.isEmpty
+                ? _buildEmptyState()
+                : _buildBillsList(),
+          ),
         ],
       ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: () => Navigator.push(
-          context,
-          PageRouteBuilder(
-            pageBuilder: (context, animation, _) => const BillingScreen(),
-            transitionsBuilder: (context, animation, _, child) {
-              return SlideTransition(
-                position: Tween<Offset>(
-                  begin: const Offset(1.0, 0.0),
-                  end: Offset.zero,
-                ).animate(animation),
-                child: child,
-              );
-            },
-          ),
-        ).then((result) {
-          if (result == true) _loadData();
+      floatingActionButton: FloatingActionButton(
+        onPressed: () => Navigator.push<bool>(
+          context, MaterialPageRoute(builder: (_) => const BillingScreen()),
+        ).then((wasModified) {
+          if (wasModified == true) _loadData();
         }),
-        icon: const Icon(Icons.add),
-        label: const Text('New Bill'),
-        backgroundColor: Colors.indigo,
+        backgroundColor: Colors.purple,
+        child: const Icon(Icons.add),
+        tooltip: 'Create New Bill',
       ),
     );
   }
 
-  Widget _buildSliverAppBar() {
-    return SliverAppBar(
-      expandedHeight: 120,
-      floating: false,
-      pinned: true,
-      elevation: 0,
-      backgroundColor: Colors.indigo,
-      flexibleSpace: FlexibleSpaceBar(
-        title: const Text(
-          'Billing History',
-          style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-        ),
-        background: Container(
-          decoration: const BoxDecoration(
-            gradient: LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: [Colors.indigo, Color(0xFF3F51B5)],
+  Widget _buildFilters() {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+      color: Colors.white,
+      child: Column(
+        children: [
+          TextField(
+            onChanged: (value) {
+              setState(() => _searchQuery = value);
+              _filterBills();
+            },
+            decoration: InputDecoration(
+              hintText: 'Search by client or bill ID...',
+              prefixIcon: const Icon(Icons.search, size: 20),
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+              filled: true,
+              fillColor: Colors.grey.shade100,
+              contentPadding: const EdgeInsets.symmetric(horizontal: 16),
             ),
           ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildSliverFilters() {
-    return SliverToBoxAdapter(
-      child: Container(
-        padding: const EdgeInsets.all(16),
-        color: Colors.grey[50],
-        child: Column(
-          children: [
-            TextField(
-              onChanged: (value) {
-                setState(() => _searchQuery = value);
-                _filterBills();
-              },
-              decoration: InputDecoration(
-                hintText: 'Search by client name or bill ID...',
-                prefixIcon: const Icon(Icons.search),
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12),
-                  borderSide: BorderSide.none,
-                ),
-                filled: true,
-                fillColor: Colors.white,
-              ),
+          const SizedBox(height: 8),
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              children: [
+                _buildFilterChip('All', 'all'),
+                _buildFilterChip('Pending', 'pending'),
+                _buildFilterChip('Paid', 'paid'),
+                _buildFilterChip('Today', 'today'),
+                _buildFilterChip('This Week', 'week'),
+              ],
             ),
-            const SizedBox(height: 12),
-            SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              child: Row(
-                children: [
-                  _buildFilterChip('All', 'all'),
-                  _buildFilterChip('Paid', 'paid'),
-                  _buildFilterChip('Pending', 'pending'),
-                  _buildFilterChip('Today', 'today'),
-                  _buildFilterChip('This Week', 'week'),
-                ],
-              ),
-            ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
@@ -441,217 +315,101 @@ class _HistoryScreenState extends State<HistoryScreen>
           setState(() => _selectedFilter = value);
           _filterBills();
         },
-        selectedColor: Colors.indigo.withOpacity(0.2),
-        checkmarkColor: Colors.indigo,
+        selectedColor: Colors.purple.withOpacity(0.2),
+        checkmarkColor: Colors.purple,
+        labelStyle: TextStyle(color: isSelected ? Colors.purple.shade900 : Colors.black87),
+        shape: StadiumBorder(side: BorderSide(color: isSelected ? Colors.purple : Colors.grey.shade300)),
         backgroundColor: Colors.white,
       ),
     );
   }
 
   Widget _buildBillsList() {
-    return SliverPadding(
+    return ListView.builder(
       padding: const EdgeInsets.all(16),
-      sliver: SliverAnimatedOpacity(
-        opacity: _fadeAnimation.value,
-        duration: const Duration(milliseconds: 600),
-        sliver: SliverList(
-          delegate: SliverChildBuilderDelegate(
-                (context, index) {
-              final bill = _filteredBills[index];
-              return SlideTransition(
-                position: _slideAnimation,
-                child: AnimatedContainer(
-                  duration: Duration(milliseconds: 200 + (index * 50)),
-                  margin: const EdgeInsets.only(bottom: 12),
-                  child: _buildBillCard(bill),
-                ),
-              );
-            },
-            childCount: _filteredBills.length,
-          ),
-        ),
-      ),
+      itemCount: _filteredBills.length,
+      itemBuilder: (context, index) {
+        final bill = _filteredBills[index];
+        // Apply list animation
+        return AnimatedBuilder(
+          animation: _listAnimationController,
+          builder: (context, child) {
+            final delay = (index * 50).clamp(0, 300);
+            final animation = CurvedAnimation(
+              parent: _listAnimationController,
+              curve: Interval((delay / 500), 1.0, curve: Curves.easeOut),
+            );
+            return FadeTransition(
+              opacity: animation,
+              child: SlideTransition(
+                position: Tween<Offset>(begin: const Offset(0, 0.1), end: Offset.zero).animate(animation),
+                child: child,
+              ),
+            );
+          },
+          child: _buildBillCard(bill),
+        );
+      },
     );
   }
 
   Widget _buildBillCard(Bill bill) {
     final client = _clients[bill.clientId];
-    final isPaid = bill.paidAmount >= bill.totalAmount;
+    final isPaid = (bill.totalAmount - bill.paidAmount).abs() < 0.01;
+    final balance = bill.totalAmount - bill.paidAmount;
 
     return Card(
-      elevation: 0,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(16),
-        side: BorderSide(color: Colors.grey.shade200),
-      ),
+      margin: const EdgeInsets.only(bottom: 12),
+      elevation: 1,
+      shadowColor: Colors.black.withOpacity(0.05),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       child: InkWell(
-        borderRadius: BorderRadius.circular(16),
-        onTap: () => _showBillItems(bill),
+        borderRadius: BorderRadius.circular(12),
+        onTap: () => _navigateToDetails(bill),
         child: Padding(
-          padding: const EdgeInsets.all(16),
+          padding: const EdgeInsets.all(16.0),
           child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  CircleAvatar(
-                    radius: 24,
-                    backgroundColor: isPaid ? Colors.green.shade100 : Colors.orange.shade100,
-                    child: Icon(
-                      isPaid ? Icons.check_circle : Icons.schedule,
-                      color: isPaid ? Colors.green : Colors.orange,
-                    ),
-                  ),
-                  const SizedBox(width: 16),
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Row(
-                          children: [
-                            Text(
-                              'INV-${bill.id}',
-                              style: const TextStyle(
-                                fontSize: 16,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                            const Spacer(),
-                            Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                              decoration: BoxDecoration(
-                                color: isPaid ? Colors.green : Colors.orange,
-                                borderRadius: BorderRadius.circular(12),
-                              ),
-                              child: Text(
-                                isPaid ? 'Paid' : 'Pending',
-                                style: const TextStyle(
-                                  color: Colors.white,
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 12,
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 4),
                         Text(
                           client?.name ?? 'Unknown Client',
-                          style: TextStyle(
-                            fontSize: 14,
-                            color: Colors.grey[600],
-                          ),
+                          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
                         ),
                         const SizedBox(height: 4),
                         Text(
-                          _dateFmt.format(bill.date),
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: Colors.grey[500],
-                          ),
+                          'INV-${bill.id}  •  ${_dateFmt.format(bill.date)}',
+                          style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
                         ),
                       ],
                     ),
                   ),
                   PopupMenuButton<String>(
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                     onSelected: (value) => _handleMenuAction(value, bill),
                     itemBuilder: (context) => [
-                      const PopupMenuItem(
-                        value: 'view',
-                        child: Row(
-                          children: [
-                            Icon(Icons.visibility, color: Colors.blue),
-                            SizedBox(width: 8),
-                            Text('View Details'),
-                          ],
-                        ),
-                      ),
-                      const PopupMenuItem(
-                        value: 'pdf',
-                        child: Row(
-                          children: [
-                            Icon(Icons.picture_as_pdf, color: Colors.green),
-                            SizedBox(width: 8),
-                            Text('Export PDF'),
-                          ],
-                        ),
-                      ),
-                      const PopupMenuItem(
-                        value: 'edit',
-                        child: Row(
-                          children: [
-                            Icon(Icons.edit, color: Colors.orange),
-                            SizedBox(width: 8),
-                            Text('Edit Bill'),
-                          ],
-                        ),
-                      ),
+                      const PopupMenuItem(value: 'view', child: Text('View Details')),
+                      const PopupMenuItem(value: 'pdf', child: Text('Export PDF')),
+                      const PopupMenuItem(value: 'edit', child: Text('Edit')),
                       const PopupMenuDivider(),
-                      const PopupMenuItem(
-                        value: 'delete',
-                        child: Row(
-                          children: [
-                            Icon(Icons.delete, color: Colors.red),
-                            SizedBox(width: 8),
-                            Text('Delete'),
-                          ],
-                        ),
-                      ),
+                      const PopupMenuItem(value: 'delete', child: Text('Delete', style: TextStyle(color: Colors.red))),
                     ],
                   ),
                 ],
               ),
-              const SizedBox(height: 12),
-              Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: Colors.grey.shade50,
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'Total Amount',
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: Colors.grey[600],
-                          ),
-                        ),
-                        Text(
-                          _currencyFormat.format(bill.totalAmount),
-                          style: const TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ],
-                    ),
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.end,
-                      children: [
-                        Text(
-                          'Balance',
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: Colors.grey[600],
-                          ),
-                        ),
-                        Text(
-                          _currencyFormat.format(bill.totalAmount - bill.paidAmount),
-                          style: TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.bold,
-                            color: isPaid ? Colors.green : Colors.red,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
+              const Divider(height: 24),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  _buildStatColumn('Total', _currencyFormat.format(bill.totalAmount), Colors.black87),
+                  _buildStatColumn('Paid', _currencyFormat.format(bill.paidAmount), Colors.green.shade700),
+                  _buildStatColumn('Balance', _currencyFormat.format(balance), isPaid ? Colors.green.shade700 : Colors.red.shade700),
+                ],
               ),
             ],
           ),
@@ -660,91 +418,37 @@ class _HistoryScreenState extends State<HistoryScreen>
     );
   }
 
-  void _handleMenuAction(String action, Bill bill) {
-    switch (action) {
-      case 'view':
-        _showBillItems(bill);
-        break;
-      case 'pdf':
-        _exportPdf(bill);
-        break;
-      case 'edit':
-        _editBill(bill);
-        break;
-      case 'delete':
-        _deleteBill(bill);
-        break;
-    }
+  Widget _buildStatColumn(String label, String value, Color valueColor) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(label, style: TextStyle(fontSize: 12, color: Colors.grey.shade600)),
+        const SizedBox(height: 2),
+        Text(value, style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: valueColor)),
+      ],
+    );
   }
 
   Widget _buildEmptyState() {
-    return Container(
-      height: MediaQuery.of(context).size.height * 0.6,
-      child: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Container(
-              width: 120,
-              height: 120,
-              decoration: BoxDecoration(
-                color: Colors.indigo.shade50,
-                borderRadius: BorderRadius.circular(60),
-              ),
-              child: Icon(
-                Icons.receipt_long_outlined,
-                size: 60,
-                color: Colors.indigo.shade300,
-              ),
-            ),
-            const SizedBox(height: 24),
-            Text(
-              _searchQuery.isEmpty ? 'No bills yet' : 'No bills found',
-              style: const TextStyle(
-                fontSize: 24,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              _searchQuery.isEmpty
-                  ? 'Create your first bill to get started'
-                  : 'Try adjusting your search or filter',
-              style: TextStyle(
-                fontSize: 16,
-                color: Colors.grey[600],
-              ),
-            ),
-            if (_searchQuery.isEmpty) ...[
-              const SizedBox(height: 32),
-              ElevatedButton(
-                onPressed: () => Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (_) => const BillingScreen()),
-                ).then((result) {
-                  if (result == true) _loadData();
-                }),
-                style: ElevatedButton.styleFrom(
-                  padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(25),
-                  ),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: const [
-                    Icon(Icons.add),
-                    SizedBox(width: 8),
-                    Text('Create First Bill'),
-                  ],
-                ),
-              ),
-            ],
-          ],
-        ),
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.search_off, size: 80, color: Colors.grey.shade300),
+          const SizedBox(height: 16),
+          const Text('No Bills Found', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 8),
+          Text(
+            _searchQuery.isNotEmpty
+                ? 'Try a different search term or filter.'
+                : 'No bills match the selected filter.',
+            style: TextStyle(color: Colors.grey.shade600),
+          ),
+        ],
       ),
     );
   }
+
 
   void _showSuccessSnackBar(String message) {
     ScaffoldMessenger.of(context).showSnackBar(

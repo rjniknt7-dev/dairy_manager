@@ -1,10 +1,8 @@
 // lib/screens/product_screen.dart
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:intl/intl.dart';
 import '../services/database_helper.dart';
-import '../services/firebase_sync_service.dart';
 import '../models/product.dart';
 
 class ProductScreen extends StatefulWidget {
@@ -18,14 +16,12 @@ class _ProductScreenState extends State<ProductScreen>
     with SingleTickerProviderStateMixin {
   final _searchController = TextEditingController();
   final DatabaseHelper db = DatabaseHelper();
-  final FirebaseSyncService _sync = FirebaseSyncService();
   final _priceFormat = NumberFormat('#,##0.00');
 
   List<Product> _products = [];
   List<Product> _filteredProducts = [];
   bool _loading = true;
   bool _isSearching = false;
-  bool _isSyncing = false;
 
   late AnimationController _animationController;
   late Animation<double> _fadeAnimation;
@@ -80,45 +76,24 @@ class _ProductScreenState extends State<ProductScreen>
     }
   }
 
-  Future<void> _syncProducts() async {
-    if (FirebaseAuth.instance.currentUser == null) {
-      _showSnackBar('Login to sync data', success: false);
-      return;
-    }
-
-    setState(() => _isSyncing = true);
-    try {
-      final result = await _sync.syncProducts();
-      if (mounted) {
-        _showSnackBar(result.message, success: result.success);
-        if (result.success) await _loadProducts();
-      }
-    } catch (e) {
-      if (mounted) _showSnackBar('Sync failed: $e', success: false);
-    } finally {
-      if (mounted) setState(() => _isSyncing = false);
-    }
-  }
-
   void _filterProducts() {
     final query = _searchController.text.toLowerCase().trim();
     if (mounted) {
       setState(() {
         _filteredProducts = _products.where((product) {
-          return query.isEmpty ||
-              product.name.toLowerCase().contains(query);
+          return query.isEmpty || product.name.toLowerCase().contains(query);
         }).toList();
       });
     }
   }
 
+  // ✅ FIX: Remove blocking sync call
   Future<void> _deleteProduct(int id, String name) async {
     final confirm = await _showDeleteConfirmation(name);
     if (!confirm) return;
 
     try {
       await db.deleteProduct(id);
-      await _syncProducts();
 
       if (mounted) {
         _loadProducts();
@@ -126,7 +101,9 @@ class _ProductScreenState extends State<ProductScreen>
         HapticFeedback.lightImpact();
       }
     } catch (e) {
-      if (mounted) _showSnackBar('Failed to delete product: $e', success: false);
+      if (mounted) {
+        _showSnackBar('Failed to delete product: $e', success: false);
+      }
     }
   }
 
@@ -134,7 +111,8 @@ class _ProductScreenState extends State<ProductScreen>
     return await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(20)),
         title: Row(
           children: [
             Container(
@@ -149,7 +127,8 @@ class _ProductScreenState extends State<ProductScreen>
             const Text('Delete Product'),
           ],
         ),
-        content: Text('Are you sure you want to delete "$productName"? This action cannot be undone.'),
+        content: Text(
+            'Are you sure you want to delete "$productName"? This action cannot be undone.'),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(false),
@@ -159,28 +138,26 @@ class _ProductScreenState extends State<ProductScreen>
             style: ElevatedButton.styleFrom(
               backgroundColor: Colors.red,
               foregroundColor: Colors.white,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(8)),
             ),
             onPressed: () => Navigator.of(context).pop(true),
             child: const Text('Delete'),
           ),
         ],
       ),
-    ) ?? false;
+    ) ??
+        false;
   }
 
+  // ✅ FIX: Await result and reload
   Future<void> _showAddEditDialog({Product? product}) async {
     if (!mounted) return;
 
-    Navigator.of(context).push(
+    final result = await Navigator.of(context).push<bool>(
       PageRouteBuilder(
         pageBuilder: (context, animation, secondaryAnimation) =>
-            _AddEditProductScreen(
-              product: product,
-              onSaved: () {
-                _loadProducts();
-              },
-            ),
+            _AddEditProductScreen(product: product),
         transitionsBuilder: (context, animation, secondaryAnimation, child) {
           return SlideTransition(
             position: Tween<Offset>(
@@ -196,12 +173,15 @@ class _ProductScreenState extends State<ProductScreen>
         transitionDuration: const Duration(milliseconds: 300),
       ),
     );
+
+    // ✅ Reload if saved successfully
+    if (result == true && mounted) {
+      _loadProducts();
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    final loggedIn = FirebaseAuth.instance.currentUser != null;
-
     return Scaffold(
       backgroundColor: Colors.grey[50],
       body: FadeTransition(
@@ -226,10 +206,8 @@ class _ProductScreenState extends State<ProductScreen>
   }
 
   Widget _buildSliverAppBar() {
-    final loggedIn = FirebaseAuth.instance.currentUser != null;
-
     return SliverAppBar(
-      expandedHeight: 140,
+      expandedHeight: 120,
       floating: false,
       pinned: true,
       elevation: 0,
@@ -249,16 +227,19 @@ class _ProductScreenState extends State<ProductScreen>
               style: const TextStyle(color: Colors.white, fontSize: 16),
               decoration: InputDecoration(
                 hintText: 'Search products...',
-                hintStyle: TextStyle(color: Colors.white.withOpacity(0.7)),
+                hintStyle:
+                TextStyle(color: Colors.white.withOpacity(0.7)),
                 border: InputBorder.none,
-                prefixIcon: const Icon(Icons.search, color: Colors.white),
+                prefixIcon:
+                const Icon(Icons.search, color: Colors.white),
               ),
             ),
           )
               : const Text(
             'Products',
             key: ValueKey('title'),
-            style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+            style: TextStyle(
+                color: Colors.white, fontWeight: FontWeight.bold),
           ),
         ),
         background: Container(
@@ -269,24 +250,9 @@ class _ProductScreenState extends State<ProductScreen>
               colors: [Colors.green.shade600, Colors.green.shade800],
             ),
           ),
-          child: !loggedIn ? _buildOfflineBanner() : null,
         ),
       ),
       actions: [
-        if (!_isSearching)
-          IconButton(
-            icon: _isSyncing
-                ? SizedBox(
-              width: 20,
-              height: 20,
-              child: CircularProgressIndicator(
-                strokeWidth: 2,
-                color: Colors.white,
-              ),
-            )
-                : const Icon(Icons.sync, color: Colors.white),
-            onPressed: _isSyncing ? null : _syncProducts,
-          ),
         IconButton(
           icon: AnimatedSwitcher(
             duration: const Duration(milliseconds: 300),
@@ -311,34 +277,6 @@ class _ProductScreenState extends State<ProductScreen>
     );
   }
 
-  Widget _buildOfflineBanner() {
-    return Align(
-      alignment: Alignment.bottomCenter,
-      child: Container(
-        width: double.infinity,
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-        decoration: const BoxDecoration(
-          color: Colors.orange,
-          borderRadius: BorderRadius.only(
-            topLeft: Radius.circular(12),
-            topRight: Radius.circular(12),
-          ),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: const [
-            Icon(Icons.cloud_off, size: 16, color: Colors.white),
-            SizedBox(width: 8),
-            Text(
-              'Offline Mode - Login to Sync',
-              style: TextStyle(color: Colors.white, fontSize: 12),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
   Widget _buildProductsList() {
     return SliverPadding(
       padding: const EdgeInsets.all(16),
@@ -346,24 +284,22 @@ class _ProductScreenState extends State<ProductScreen>
         delegate: SliverChildBuilderDelegate(
               (context, index) {
             final product = _filteredProducts[index];
-            final needSync = !product.isSynced && FirebaseAuth.instance.currentUser != null;
-            final lowStock = product.stock <= 5 && product.stock > 0;
-            final outOfStock = product.stock == 0;
+            final lowStock = (product.stock ?? 0) <= 5 && (product.stock ?? 0) > 0;
+            final outOfStock = (product.stock ?? 0) == 0;
 
             return TweenAnimationBuilder<double>(
               tween: Tween(begin: 0.0, end: 1.0),
-              duration: Duration(milliseconds: 300 + (index * 100)),
+              duration: Duration(milliseconds: 300 + (index * 50)),
               curve: Curves.easeOutBack,
               builder: (context, value, child) {
-                // ✅ FIX: Clamp the opacity value to prevent errors
                 final clampedValue = value.clamp(0.0, 1.0);
                 return Transform.translate(
-                  offset: Offset(0, 50 * (1 - clampedValue)),
+                  offset: Offset(0, 30 * (1 - clampedValue)),
                   child: Opacity(
-                    opacity: clampedValue, // ✅ Use clamped value
+                    opacity: clampedValue,
                     child: Container(
                       margin: const EdgeInsets.only(bottom: 12),
-                      child: _buildProductCard(product, needSync, lowStock, outOfStock),
+                      child: _buildProductCard(product, lowStock, outOfStock),
                     ),
                   ),
                 );
@@ -376,7 +312,7 @@ class _ProductScreenState extends State<ProductScreen>
     );
   }
 
-  Widget _buildProductCard(Product product, bool needSync, bool lowStock, bool outOfStock) {
+  Widget _buildProductCard(Product product, bool lowStock, bool outOfStock) {
     return Card(
       elevation: 2,
       shape: RoundedRectangleBorder(
@@ -386,108 +322,98 @@ class _ProductScreenState extends State<ProductScreen>
         borderRadius: BorderRadius.circular(16),
         onTap: () => _showAddEditDialog(product: product),
         child: Padding(
-          padding: const EdgeInsets.all(12), // ✅ REDUCED from 16 to 12
+          padding: const EdgeInsets.all(12),
           child: Row(
             children: [
               Hero(
                 tag: 'product_${product.id}',
                 child: Container(
-                  width: 48, // ✅ REDUCED from 56 to 48
-                  height: 48, // ✅ REDUCED from 56 to 48
+                  width: 48,
+                  height: 48,
                   decoration: BoxDecoration(
                     gradient: LinearGradient(
                       colors: [Colors.green.shade400, Colors.green.shade600],
                     ),
-                    borderRadius: BorderRadius.circular(24), // ✅ REDUCED from 28 to 24
+                    borderRadius: BorderRadius.circular(24),
                     boxShadow: [
                       BoxShadow(
                         color: Colors.green.shade200,
-                        blurRadius: 6, // ✅ REDUCED from 8 to 6
+                        blurRadius: 6,
                         offset: const Offset(0, 2),
                       ),
                     ],
                   ),
-                  child: Center(
+                  child: const Center(
                     child: Icon(
                       Icons.inventory_2_outlined,
                       color: Colors.white,
-                      size: 20, // ✅ REDUCED from 24 to 20
+                      size: 20,
                     ),
                   ),
                 ),
               ),
-              const SizedBox(width: 12), // ✅ REDUCED from 16 to 12
+              const SizedBox(width: 12),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min, // ✅ ADDED to make column compact
+                  mainAxisSize: MainAxisSize.min,
                   children: [
-                    Row(
-                      children: [
-                        Expanded(
-                          child: Text(
-                            product.name,
-                            style: const TextStyle(
-                              fontSize: 16, // ✅ REDUCED from 18 to 16
-                              fontWeight: FontWeight.bold,
-                            ),
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
-                        if (needSync)
-                          Tooltip(
-                            message: 'Needs sync',
-                            child: Icon(
-                              Icons.sync_problem,
-                              size: 16, // ✅ REDUCED from 18 to 16
-                              color: Colors.orange,
-                            ),
-                          ),
-                      ],
+                    Text(
+                      product.name,
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                      ),
+                      overflow: TextOverflow.ellipsis,
                     ),
-                    const SizedBox(height: 4), // ✅ REDUCED from 6 to 4
+                    const SizedBox(height: 4),
                     Wrap(
-                      spacing: 6, // ✅ REDUCED from 8 to 6
-                      runSpacing: 2, // ✅ REDUCED from 4 to 2
+                      spacing: 6,
+                      runSpacing: 2,
                       children: [
+                        // ✅ FIX: Use weight instead of quantity
+                        if (product.quantity != null) ...[
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Container(
+                                padding: const EdgeInsets.all(1),
+                                decoration: BoxDecoration(
+                                  color: Colors.blue.shade50,
+                                  borderRadius: BorderRadius.circular(3),
+                                ),
+                                child: Icon(Icons.scale,
+                                    size: 12, color: Colors.blue.shade600),
+                              ),
+                              const SizedBox(width: 3),
+                              Text(
+                                '${_priceFormat.format(product.quantity)}',
+                                style: TextStyle(
+                                  color: Colors.grey[700],
+                                  fontSize: 12,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
                         Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
                             Container(
-                              padding: const EdgeInsets.all(1), // ✅ REDUCED from 2 to 1
-                              decoration: BoxDecoration(
-                                color: Colors.blue.shade50,
-                                borderRadius: BorderRadius.circular(3), // ✅ REDUCED from 4 to 3
-                              ),
-                              child: Icon(Icons.scale, size: 12, color: Colors.blue.shade600), // ✅ REDUCED from 14 to 12
-                            ),
-                            const SizedBox(width: 3), // ✅ REDUCED from 4 to 3
-                            Text(
-                              '${_priceFormat.format(product.quantity)} ',
-                              style: TextStyle(
-                                color: Colors.grey[700],
-                                fontSize: 12, // ✅ REDUCED from 14 to 12
-                              ),
-                            ),
-                          ],
-                        ),
-                        Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Container(
-                              padding: const EdgeInsets.all(1), // ✅ REDUCED from 2 to 1
+                              padding: const EdgeInsets.all(1),
                               decoration: BoxDecoration(
                                 color: Colors.purple.shade50,
-                                borderRadius: BorderRadius.circular(3), // ✅ REDUCED from 4 to 3
+                                borderRadius: BorderRadius.circular(3),
                               ),
-                              child: Icon(Icons.attach_money, size: 12, color: Colors.purple.shade600), // ✅ REDUCED from 14 to 12
+                              child: Icon(Icons.attach_money,
+                                  size: 12, color: Colors.purple.shade600),
                             ),
-                            const SizedBox(width: 3), // ✅ REDUCED from 4 to 3
+                            const SizedBox(width: 3),
                             Text(
                               '₹${_priceFormat.format(product.price)}',
                               style: TextStyle(
                                 color: Colors.grey[700],
-                                fontSize: 12, // ✅ REDUCED from 14 to 12
+                                fontSize: 12,
                               ),
                             ),
                           ],
@@ -495,25 +421,26 @@ class _ProductScreenState extends State<ProductScreen>
                       ],
                     ),
                     if (product.costPrice != null && product.costPrice! > 0) ...[
-                      const SizedBox(height: 2), // ✅ REDUCED from 4 to 2
+                      const SizedBox(height: 2),
                       Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
                           Container(
-                            padding: const EdgeInsets.all(1), // ✅ REDUCED from 2 to 1
+                            padding: const EdgeInsets.all(1),
                             decoration: BoxDecoration(
                               color: Colors.orange.shade50,
-                              borderRadius: BorderRadius.circular(3), // ✅ REDUCED from 4 to 3
+                              borderRadius: BorderRadius.circular(3),
                             ),
-                            child: Icon(Icons.price_change, size: 12, color: Colors.orange.shade600), // ✅ REDUCED from 14 to 12
+                            child: Icon(Icons.price_change,
+                                size: 12, color: Colors.orange.shade600),
                           ),
-                          const SizedBox(width: 4), // ✅ KEPT same for readability
+                          const SizedBox(width: 4),
                           Flexible(
                             child: Text(
                               'Cost: ₹${_priceFormat.format(product.costPrice!)}',
                               style: TextStyle(
                                 color: Colors.grey[700],
-                                fontSize: 12, // ✅ REDUCED from 14 to 12
+                                fontSize: 12,
                               ),
                               overflow: TextOverflow.ellipsis,
                             ),
@@ -521,29 +448,32 @@ class _ProductScreenState extends State<ProductScreen>
                         ],
                       ),
                     ],
-                    const SizedBox(height: 2), // ✅ REDUCED from 4 to 2
+                    const SizedBox(height: 2),
                     Wrap(
-                      spacing: 6, // ✅ REDUCED from 8 to 6
-                      runSpacing: 2, // ✅ REDUCED from 4 to 2
+                      spacing: 6,
+                      runSpacing: 2,
                       crossAxisAlignment: WrapCrossAlignment.center,
                       children: [
                         Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
                             Container(
-                              padding: const EdgeInsets.all(1), // ✅ REDUCED from 2 to 1
+                              padding: const EdgeInsets.all(1),
                               decoration: BoxDecoration(
                                 color: Colors.green.shade50,
-                                borderRadius: BorderRadius.circular(3), // ✅ REDUCED from 4 to 3
+                                borderRadius: BorderRadius.circular(3),
                               ),
-                              child: Icon(Icons.inventory, size: 12, color: Colors.green.shade600), // ✅ REDUCED from 14 to 12
+                              child: Icon(Icons.inventory,
+                                  size: 12, color: Colors.green.shade600),
                             ),
-                            const SizedBox(width: 3), // ✅ REDUCED from 4 to 3
+                            const SizedBox(width: 3),
                             Text(
-                              'Stock: ${_priceFormat.format(product.stock)}',
+                              'Stock: ${_priceFormat.format(product.stock ?? 0)}',
                               style: TextStyle(
-                                color: outOfStock ? Colors.red : (lowStock ? Colors.orange : Colors.green),
-                                fontSize: 12, // ✅ REDUCED from 14 to 12
+                                color: outOfStock
+                                    ? Colors.red
+                                    : (lowStock ? Colors.orange : Colors.green),
+                                fontSize: 12,
                                 fontWeight: FontWeight.w500,
                               ),
                             ),
@@ -551,32 +481,34 @@ class _ProductScreenState extends State<ProductScreen>
                         ),
                         if (lowStock)
                           Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1), // ✅ REDUCED padding
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 4, vertical: 1),
                             decoration: BoxDecoration(
                               color: Colors.orange.withOpacity(0.1),
-                              borderRadius: BorderRadius.circular(3), // ✅ REDUCED from 4 to 3
+                              borderRadius: BorderRadius.circular(3),
                             ),
                             child: Text(
                               'Low Stock',
                               style: TextStyle(
                                 color: Colors.orange.shade800,
-                                fontSize: 9, // ✅ REDUCED from 10 to 9
+                                fontSize: 9,
                                 fontWeight: FontWeight.w600,
                               ),
                             ),
                           ),
                         if (outOfStock)
                           Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1), // ✅ REDUCED padding
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 4, vertical: 1),
                             decoration: BoxDecoration(
                               color: Colors.red.withOpacity(0.1),
-                              borderRadius: BorderRadius.circular(3), // ✅ REDUCED from 4 to 3
+                              borderRadius: BorderRadius.circular(3),
                             ),
                             child: Text(
                               'Out of Stock',
                               style: TextStyle(
                                 color: Colors.red.shade800,
-                                fontSize: 9, // ✅ REDUCED from 10 to 9
+                                fontSize: 9,
                                 fontWeight: FontWeight.w600,
                               ),
                             ),
@@ -587,17 +519,18 @@ class _ProductScreenState extends State<ProductScreen>
                 ),
               ),
               PopupMenuButton<String>(
-                icon: Icon(Icons.more_vert, size: 20), // ✅ ADDED smaller icon
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                icon: const Icon(Icons.more_vert, size: 20),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12)),
                 onSelected: (value) => _handleMenuAction(value, product),
                 itemBuilder: (context) => [
                   const PopupMenuItem(
                     value: 'edit',
                     child: Row(
                       children: [
-                        Icon(Icons.edit, color: Colors.blue, size: 18), // ✅ REDUCED icon size
-                        SizedBox(width: 6), // ✅ REDUCED spacing
-                        Text('Edit', style: TextStyle(fontSize: 13)), // ✅ REDUCED text size
+                        Icon(Icons.edit, color: Colors.blue, size: 18),
+                        SizedBox(width: 6),
+                        Text('Edit', style: TextStyle(fontSize: 13)),
                       ],
                     ),
                   ),
@@ -605,9 +538,9 @@ class _ProductScreenState extends State<ProductScreen>
                     value: 'delete',
                     child: Row(
                       children: [
-                        Icon(Icons.delete, color: Colors.red, size: 18), // ✅ REDUCED icon size
-                        SizedBox(width: 6), // ✅ REDUCED spacing
-                        Text('Delete', style: TextStyle(fontSize: 13)), // ✅ REDUCED text size
+                        Icon(Icons.delete, color: Colors.red, size: 18),
+                        SizedBox(width: 6),
+                        Text('Delete', style: TextStyle(fontSize: 13)),
                       ],
                     ),
                   ),
@@ -641,7 +574,6 @@ class _ProductScreenState extends State<ProductScreen>
             duration: const Duration(milliseconds: 800),
             curve: Curves.elasticOut,
             builder: (context, value, child) {
-              // ✅ FIX: Clamp the scale value
               final clampedValue = value.clamp(0.0, 1.0);
               return Transform.scale(
                 scale: clampedValue,
@@ -670,7 +602,9 @@ class _ProductScreenState extends State<ProductScreen>
           ),
           const SizedBox(height: 24),
           Text(
-            _searchController.text.isEmpty ? 'No products yet' : 'No products found',
+            _searchController.text.isEmpty
+                ? 'No products yet'
+                : 'No products found',
             style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
           ),
           const SizedBox(height: 8),
@@ -690,8 +624,10 @@ class _ProductScreenState extends State<ProductScreen>
               style: ElevatedButton.styleFrom(
                 backgroundColor: Colors.green,
                 foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(25)),
+                padding:
+                const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(25)),
                 elevation: 2,
               ),
             ),
@@ -736,15 +672,13 @@ class _ProductScreenState extends State<ProductScreen>
   }
 }
 
-// Add/Edit Product Screen as a separate widget
+// ==========================================
+// ✅ FIXED ADD/EDIT PRODUCT SCREEN
+// ==========================================
 class _AddEditProductScreen extends StatefulWidget {
   final Product? product;
-  final VoidCallback onSaved;
 
-  const _AddEditProductScreen({
-    this.product,
-    required this.onSaved,
-  });
+  const _AddEditProductScreen({this.product});
 
   @override
   State<_AddEditProductScreen> createState() => _AddEditProductScreenState();
@@ -753,7 +687,6 @@ class _AddEditProductScreen extends StatefulWidget {
 class _AddEditProductScreenState extends State<_AddEditProductScreen>
     with SingleTickerProviderStateMixin {
   final _db = DatabaseHelper();
-  final _sync = FirebaseSyncService();
   final _formKey = GlobalKey<FormState>();
   final _scrollController = ScrollController();
 
@@ -774,9 +707,12 @@ class _AddEditProductScreenState extends State<_AddEditProductScreen>
     super.initState();
 
     _nameController = TextEditingController(text: widget.product?.name ?? '');
-    _weightController = TextEditingController(text: widget.product?.quantity.toString() ?? '');
-    _priceController = TextEditingController(text: widget.product?.price.toString() ?? '');
-    _costController = TextEditingController(text: widget.product?.costPrice?.toString() ?? '');
+    _weightController =
+        TextEditingController(text: widget.product?.quantity?.toString() ?? '');
+    _priceController =
+        TextEditingController(text: widget.product?.price.toString() ?? '');
+    _costController =
+        TextEditingController(text: widget.product?.costPrice?.toString() ?? '');
 
     _nameController.addListener(_onChange);
     _weightController.addListener(_onChange);
@@ -800,9 +736,12 @@ class _AddEditProductScreenState extends State<_AddEditProductScreen>
 
     final hasChanges = _isEditing
         ? (_nameController.text != (widget.product?.name ?? '') ||
-        _weightController.text != (widget.product?.quantity.toString() ?? '') ||
-        _priceController.text != (widget.product?.price.toString() ?? '') ||
-        _costController.text != (widget.product?.costPrice?.toString() ?? ''))
+        _weightController.text !=
+            (widget.product?.quantity?.toString() ?? '') ||
+        _priceController.text !=
+            (widget.product?.price.toString() ?? '') ||
+        _costController.text !=
+            (widget.product?.costPrice?.toString() ?? ''))
         : (_nameController.text.isNotEmpty ||
         _weightController.text.isNotEmpty ||
         _priceController.text.isNotEmpty);
@@ -812,6 +751,7 @@ class _AddEditProductScreenState extends State<_AddEditProductScreen>
     }
   }
 
+  // ✅ FIX: Remove blocking sync call
   Future<void> _saveProduct() async {
     if (!_formKey.currentState!.validate()) return;
 
@@ -824,8 +764,8 @@ class _AddEditProductScreenState extends State<_AddEditProductScreen>
     if (duplicate) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: const Text('Product with this name already exists'),
+          const SnackBar(
+            content: Text('Product with this name already exists'),
             backgroundColor: Colors.red,
             behavior: SnackBarBehavior.floating,
           ),
@@ -840,51 +780,82 @@ class _AddEditProductScreenState extends State<_AddEditProductScreen>
       final product = Product(
         id: widget.product?.id,
         name: _nameController.text.trim(),
-        quantity: double.parse(_weightController.text),
-        price: double.parse(_priceController.text),
-        costPrice: double.tryParse(_costController.text) ?? 0.0,
+        quantity: double.tryParse(_weightController.text) ?? 0.0, // fallback to 0.0
+        price: double.tryParse(_priceController.text) ?? 0.0,       // safer than parse
+        costPrice: double.tryParse(_costController.text) ?? 0.0,     // fallback to 0.0
         stock: widget.product?.stock ?? 0.0,
+        updatedAt: DateTime.now(),
+        isSynced: false,
       );
+
 
       if (_isEditing) {
         await _db.updateProduct(product);
+        debugPrint('✅ Product updated: ${product.name}');
       } else {
         await _db.insertProduct(product);
+        debugPrint('✅ Product added: ${product.name}');
       }
 
-      await _sync.syncProducts();
+      // ✅ Background sync will handle Firebase automatically
+      // No manual sync needed!
 
-      if (mounted) {
-        HapticFeedback.lightImpact();
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(_isEditing ? 'Product updated successfully' : 'Product added successfully'),
-            backgroundColor: Colors.green,
-            behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      if (!mounted) return;
+
+      HapticFeedback.lightImpact();
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Row(
+            children: [
+              const Icon(Icons.check_circle, color: Colors.white),
+              const SizedBox(width: 12),
+              Text(_isEditing
+                  ? 'Product updated successfully'
+                  : 'Product added successfully'),
+            ],
           ),
-        );
+          backgroundColor: Colors.green,
+          behavior: SnackBarBehavior.floating,
+          shape:
+          RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          duration: const Duration(seconds: 2),
+        ),
+      );
 
-        widget.onSaved();
-        Navigator.pop(context);
-      }
+      // ✅ Navigate back immediately with success result
+      Navigator.pop(context, true);
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed to save: $e'),
-            backgroundColor: Colors.red,
-            behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      debugPrint('❌ Error saving product: $e');
+
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Row(
+            children: [
+              const Icon(Icons.error, color: Colors.white),
+              const SizedBox(width: 12),
+              Expanded(child: Text('Failed to save: $e')),
+            ],
           ),
-        );
-      }
+          backgroundColor: Colors.red,
+          behavior: SnackBarBehavior.floating,
+          shape:
+          RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          duration: const Duration(seconds: 3),
+        ),
+      );
     } finally {
       if (mounted) setState(() => _saving = false);
     }
   }
 
-  String? _validateNumber(String? value, String fieldName) {
+  String? _validateNumber(String? value, String fieldName,
+      {bool required = true}) {
+    if (!required && (value == null || value.trim().isEmpty)) {
+      return null;
+    }
     if (value == null || value.trim().isEmpty) {
       return 'Enter $fieldName';
     }
@@ -917,7 +888,7 @@ class _AddEditProductScreenState extends State<_AddEditProductScreen>
         elevation: 0,
         leading: IconButton(
           icon: const Icon(Icons.arrow_back),
-          onPressed: () => Navigator.pop(context),
+          onPressed: () => Navigator.pop(context, false),
         ),
       ),
       body: FadeTransition(
@@ -945,7 +916,10 @@ class _AddEditProductScreenState extends State<_AddEditProductScreen>
                               padding: const EdgeInsets.all(12),
                               decoration: BoxDecoration(
                                 gradient: LinearGradient(
-                                  colors: [Colors.green.shade400, Colors.green.shade600],
+                                  colors: [
+                                    Colors.green.shade400,
+                                    Colors.green.shade600
+                                  ],
                                 ),
                                 borderRadius: BorderRadius.circular(12),
                               ),
@@ -957,7 +931,9 @@ class _AddEditProductScreenState extends State<_AddEditProductScreen>
                             ),
                             const SizedBox(width: 16),
                             Text(
-                              _isEditing ? 'Edit Information' : 'Product Information',
+                              _isEditing
+                                  ? 'Edit Information'
+                                  : 'Product Information',
                               style: const TextStyle(
                                 fontSize: 20,
                                 fontWeight: FontWeight.bold,
@@ -970,67 +946,86 @@ class _AddEditProductScreenState extends State<_AddEditProductScreen>
                           controller: _nameController,
                           decoration: InputDecoration(
                             labelText: 'Product Name',
-                            prefixIcon: const Icon(Icons.inventory_2_outlined),
+                            prefixIcon:
+                            const Icon(Icons.inventory_2_outlined),
                             border: OutlineInputBorder(
                               borderRadius: BorderRadius.circular(12),
                             ),
                             filled: true,
                             fillColor: Colors.grey.shade50,
                           ),
-                          validator: (v) => v == null || v.trim().isEmpty ? 'Enter product name' : null,
+                          validator: (v) => v == null || v.trim().isEmpty
+                              ? 'Enter product name'
+                              : null,
+                          enabled: !_saving,
                         ),
                         const SizedBox(height: 16),
                         TextFormField(
                           controller: _weightController,
                           decoration: InputDecoration(
-                            labelText: 'Quantity',
+                            labelText: 'Weight/Quantity (Optional)',
                             prefixIcon: const Icon(Icons.scale_outlined),
                             border: OutlineInputBorder(
                               borderRadius: BorderRadius.circular(12),
                             ),
                             filled: true,
                             fillColor: Colors.grey.shade50,
+                            helperText: 'e.g., 1.0 ltr or 500 gm',
                           ),
-                          keyboardType: TextInputType.numberWithOptions(decimal: true),
+                          keyboardType:
+                          const TextInputType.numberWithOptions(decimal: true),
                           inputFormatters: [
-                            FilteringTextInputFormatter.allow(RegExp(r'^\d*\.?\d{0,2}'))
+                            FilteringTextInputFormatter.allow(
+                                RegExp(r'^\d*\.?\d{0,2}'))
                           ],
-                          validator: (v) => _validateNumber(v, 'weight'),
+                          validator: (v) =>
+                              _validateNumber(v, 'weight', required: false),
+                          enabled: !_saving,
                         ),
                         const SizedBox(height: 16),
                         TextFormField(
                           controller: _priceController,
                           decoration: InputDecoration(
                             labelText: 'Selling Price (₹)',
-                            prefixIcon: const Icon(Icons.attach_money_outlined),
+                            prefixIcon:
+                            const Icon(Icons.attach_money_outlined),
                             border: OutlineInputBorder(
                               borderRadius: BorderRadius.circular(12),
                             ),
                             filled: true,
                             fillColor: Colors.grey.shade50,
                           ),
-                          keyboardType: TextInputType.numberWithOptions(decimal: true),
+                          keyboardType:
+                          const TextInputType.numberWithOptions(decimal: true),
                           inputFormatters: [
-                            FilteringTextInputFormatter.allow(RegExp(r'^\d*\.?\d{0,2}'))
+                            FilteringTextInputFormatter.allow(
+                                RegExp(r'^\d*\.?\d{0,2}'))
                           ],
                           validator: (v) => _validateNumber(v, 'price'),
+                          enabled: !_saving,
                         ),
                         const SizedBox(height: 16),
                         TextFormField(
                           controller: _costController,
                           decoration: InputDecoration(
                             labelText: 'Cost Price (₹) - Optional',
-                            prefixIcon: const Icon(Icons.price_change_outlined),
+                            prefixIcon:
+                            const Icon(Icons.price_change_outlined),
                             border: OutlineInputBorder(
                               borderRadius: BorderRadius.circular(12),
                             ),
                             filled: true,
                             fillColor: Colors.grey.shade50,
                           ),
-                          keyboardType: TextInputType.numberWithOptions(decimal: true),
+                          keyboardType:
+                          const TextInputType.numberWithOptions(decimal: true),
                           inputFormatters: [
-                            FilteringTextInputFormatter.allow(RegExp(r'^\d*\.?\d{0,2}'))
+                            FilteringTextInputFormatter.allow(
+                                RegExp(r'^\d*\.?\d{0,2}'))
                           ],
+                          validator: (v) =>
+                              _validateNumber(v, 'cost', required: false),
+                          enabled: !_saving,
                         ),
                         if (_hasChanges) ...[
                           const SizedBox(height: 16),
@@ -1043,11 +1038,18 @@ class _AddEditProductScreenState extends State<_AddEditProductScreen>
                             ),
                             child: Row(
                               children: [
-                                Icon(Icons.info_outline, color: Colors.green.shade600),
+                                Icon(Icons.info_outline,
+                                    color: Colors.green.shade600),
                                 const SizedBox(width: 8),
-                                Text(
-                                  _isEditing ? 'Changes ready to save' : 'Ready to add product',
-                                  style: TextStyle(color: Colors.green.shade700),
+                                Expanded(
+                                  child: Text(
+                                    _isEditing
+                                        ? 'Changes ready to save (will sync automatically)'
+                                        : 'Ready to add product (will sync automatically)',
+                                    style: TextStyle(
+                                        color: Colors.green.shade700,
+                                        fontSize: 13),
+                                  ),
                                 ),
                               ],
                             ),
@@ -1062,7 +1064,9 @@ class _AddEditProductScreenState extends State<_AddEditProductScreen>
                   children: [
                     Expanded(
                       child: TextButton(
-                        onPressed: () => Navigator.pop(context),
+                        onPressed: _saving
+                            ? null
+                            : () => Navigator.pop(context, false),
                         style: TextButton.styleFrom(
                           padding: const EdgeInsets.symmetric(vertical: 16),
                           shape: RoundedRectangleBorder(
@@ -1075,14 +1079,20 @@ class _AddEditProductScreenState extends State<_AddEditProductScreen>
                     const SizedBox(width: 16),
                     Expanded(
                       child: ElevatedButton(
-                        onPressed: _hasChanges && !_saving ? _saveProduct : null,
+                        onPressed:
+                        _hasChanges && !_saving ? _saveProduct : null,
                         style: ElevatedButton.styleFrom(
-                          backgroundColor: _hasChanges ? Colors.green : Colors.grey.shade300,
-                          foregroundColor: _hasChanges ? Colors.white : Colors.grey.shade500,
+                          backgroundColor: _hasChanges
+                              ? Colors.green
+                              : Colors.grey.shade300,
+                          foregroundColor: _hasChanges
+                              ? Colors.white
+                              : Colors.grey.shade500,
                           padding: const EdgeInsets.symmetric(vertical: 16),
                           shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(12),
                           ),
+                          elevation: _hasChanges ? 2 : 0,
                         ),
                         child: _saving
                             ? const SizedBox(
@@ -1093,7 +1103,13 @@ class _AddEditProductScreenState extends State<_AddEditProductScreen>
                             color: Colors.white,
                           ),
                         )
-                            : Text(_isEditing ? 'Update Product' : 'Add Product'),
+                            : Text(
+                          _isEditing ? 'Update Product' : 'Add Product',
+                          style: const TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
                       ),
                     ),
                   ],

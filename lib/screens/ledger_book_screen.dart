@@ -1,10 +1,12 @@
+// lib/screens/ledger_book_screen.dart - v2.0 (Intelligent & Polished)
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:intl/intl.dart';
 import '../services/database_helper.dart';
 import '../services/firebase_sync_service.dart';
 import '../models/client.dart';
 import 'ledger_screen.dart';
-// import 'add_client_screen.dart'; // if you have an AddClientScreen
+// import 'add_client_screen.dart'; // Make sure this screen exists
 
 class LedgerBookScreen extends StatefulWidget {
   const LedgerBookScreen({super.key});
@@ -16,214 +18,179 @@ class LedgerBookScreen extends StatefulWidget {
 class _LedgerBookScreenState extends State<LedgerBookScreen> {
   final db = DatabaseHelper();
   final _syncService = FirebaseSyncService();
+  final _currencyFormat = NumberFormat.currency(symbol: '₹', decimalDigits: 0);
 
-  List<Client> _clients = [];
-  List<Client> _filtered = [];
+  List<Map<String, dynamic>> _clientsWithBalance = [];
+  List<Map<String, dynamic>> _filteredClients = [];
   bool _loading = true;
   bool _isSyncing = false;
-  String _search = '';
+  final _searchController = TextEditingController();
 
   @override
   void initState() {
     super.initState();
-    _loadClients();
+    _loadClientData();
+    _searchController.addListener(_applyFilter);
   }
 
-  Future<void> _loadClients() async {
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  // ✅ UPDATED: Fetches clients with their balances for a smart list
+  Future<void> _loadClientData() async {
+    if (!mounted) return;
     setState(() => _loading = true);
     try {
-      final list = await db.getClients();
+      final list = await db.getClientsWithBalances();
       if (mounted) {
-        _clients = list;
-        _applyFilter();
+        setState(() {
+          _clientsWithBalance = list;
+          _filteredClients = list;
+          _loading = false;
+        });
       }
     } catch (e) {
-      _showSnack('Failed to load clients: $e', Colors.red);
-    } finally {
+      _showSnack('Failed to load clients: $e', isError: true);
       if (mounted) setState(() => _loading = false);
     }
   }
 
   void _applyFilter() {
-    final q = _search.trim().toLowerCase();
+    final query = _searchController.text.trim().toLowerCase();
     setState(() {
-      _filtered = q.isEmpty
-          ? _clients
-          : _clients
-          .where((c) =>
-      c.name.toLowerCase().contains(q) ||
-          c.phone.toLowerCase().contains(q))
-          .toList();
+      _filteredClients = query.isEmpty
+          ? _clientsWithBalance
+          : _clientsWithBalance.where((clientMap) {
+        final client = Client.fromMap(clientMap);
+        return client.name.toLowerCase().contains(query) || (client.phone?.toLowerCase().contains(query) ?? false);
+      }).toList();
     });
   }
 
-  Future<void> _syncLedgerData() async {
+  Future<void> _syncData() async {
     if (FirebaseAuth.instance.currentUser == null) {
-      _showSnack('Login to sync data', Colors.orange);
+      _showSnack('Login required to sync data.', isError: true);
       return;
     }
+    if (_isSyncing) return;
+
     setState(() => _isSyncing = true);
     final result = await _syncService.syncAllData();
-    if (mounted) setState(() => _isSyncing = false);
-
-    _showSnack(result.message,
-        result.success ? Colors.green : Colors.red);
-    if (result.success) await _loadClients();
-  }
-
-  void _showSnack(String message, [Color? color]) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text(message), backgroundColor: color));
+    if (mounted) {
+      setState(() => _isSyncing = false);
+      _showSnack(result.message, isSuccess: result.success);
+      if (result.success) _loadClientData();
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    final isLoggedIn = FirebaseAuth.instance.currentUser != null;
-
     return Scaffold(
-      backgroundColor: Colors.grey[50],
       appBar: AppBar(
-        title: const Text('Ledger Book'),
-        backgroundColor: Colors.redAccent,
+        title: const Text('Client Ledgers'),
         actions: [
           IconButton(
             icon: _isSyncing
-                ? const SizedBox(
-              width: 20,
-              height: 20,
-              child: CircularProgressIndicator(
-                strokeWidth: 2,
-                color: Colors.white,
-              ),
-            )
+                ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
                 : const Icon(Icons.sync),
-            tooltip: 'Sync Data',
-            onPressed: _isSyncing ? null : _syncLedgerData,
+            tooltip: 'Sync All Data',
+            onPressed: _syncData,
           ),
         ],
         bottom: PreferredSize(
           preferredSize: const Size.fromHeight(56),
           child: Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
             child: TextField(
+              controller: _searchController,
               decoration: InputDecoration(
                 hintText: 'Search by name or phone…',
                 filled: true,
-                fillColor: Colors.white,
+                fillColor: Colors.white.withOpacity(0.9),
                 prefixIcon: const Icon(Icons.search),
-                contentPadding:
-                const EdgeInsets.symmetric(vertical: 0, horizontal: 12),
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(25),
-                  borderSide: BorderSide.none,
-                ),
+                contentPadding: const EdgeInsets.symmetric(horizontal: 16),
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(30), borderSide: BorderSide.none),
               ),
-              onChanged: (v) {
-                _search = v;
-                _applyFilter();
-              },
             ),
           ),
         ),
       ),
-      floatingActionButton: FloatingActionButton.extended(
-        backgroundColor: Colors.redAccent,
-        icon: const Icon(Icons.person_add),
-        label: const Text('Add Client'),
+      floatingActionButton: FloatingActionButton(
+        child: const Icon(Icons.person_add),
         onPressed: () {
-          // Navigator.push(context,
-          //   MaterialPageRoute(builder: (_) => const AddClientScreen()))
-          //     .then((_) => _loadClients());
+          // TODO: Implement navigation to AddClientScreen
+          // Navigator.push(context, MaterialPageRoute(builder: (_) => const AddClientScreen())).then((_) => _loadClientData());
+          _showSnack("Navigate to 'Add Client' screen here.", isSuccess: true);
         },
       ),
-      body: Column(
-        children: [
-          if (!isLoggedIn)
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(8),
-              color: Colors.orange.shade100,
-              child: Row(
-                children: [
-                  Icon(Icons.cloud_off, size: 18, color: Colors.orange.shade700),
-                  const SizedBox(width: 8),
-                  const Text(
-                    'Offline mode – Login to sync data',
-                    style: TextStyle(fontSize: 13, color: Colors.orange),
+      body: _loading
+          ? const Center(child: CircularProgressIndicator())
+          : _filteredClients.isEmpty
+          ? _buildEmptyState()
+          : RefreshIndicator(
+        onRefresh: _loadClientData,
+        child: ListView.builder(
+          padding: const EdgeInsets.all(8),
+          itemCount: _filteredClients.length,
+          itemBuilder: (ctx, i) {
+            final clientMap = _filteredClients[i];
+            final client = Client.fromMap(clientMap);
+            final balance = (clientMap['balance'] as num?)?.toDouble() ?? 0.0;
+
+            final hasDue = balance > 0;
+            final isSynced = client.isSynced;
+
+            return Card(
+              margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+              elevation: 2,
+              shadowColor: (hasDue ? Colors.red : Colors.green).withOpacity(0.1),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              child: ListTile(
+                leading: CircleAvatar(
+                  backgroundColor: (hasDue ? Colors.red.shade50 : Colors.green.shade50),
+                  child: Text(
+                    client.name.isNotEmpty ? client.name[0].toUpperCase() : '?',
+                    style: TextStyle(fontWeight: FontWeight.bold, color: hasDue ? Colors.red.shade800 : Colors.green.shade800),
                   ),
-                ],
-              ),
-            ),
-          Expanded(
-            child: _loading
-                ? const Center(child: CircularProgressIndicator())
-                : _filtered.isEmpty
-                ? _buildEmptyState()
-                : RefreshIndicator(
-              onRefresh: _loadClients,
-              child: ListView.builder(
-                physics: const AlwaysScrollableScrollPhysics(),
-                padding: const EdgeInsets.symmetric(
-                    horizontal: 12, vertical: 8),
-                itemCount: _filtered.length,
-                itemBuilder: (ctx, i) {
-                  final client = _filtered[i];
-                  final needsSync =
-                      !client.isSynced && isLoggedIn;
-                  return Card(
-                    elevation: 2,
-                    margin: const EdgeInsets.symmetric(vertical: 6),
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(16)),
-                    child: ListTile(
-                      leading: CircleAvatar(
-                        backgroundColor: Colors.redAccent,
-                        child: Text(
-                          client.name.isNotEmpty
-                              ? client.name[0].toUpperCase()
-                              : '?',
-                          style:
-                          const TextStyle(color: Colors.white),
-                        ),
+                ),
+                title: Text(client.name, style: const TextStyle(fontWeight: FontWeight.bold)),
+                subtitle: Text(client.phone ?? 'No phone number'),
+                trailing: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    Text(
+                      _currencyFormat.format(balance.abs()),
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 16,
+                        color: hasDue ? Colors.red : Colors.green,
                       ),
-                      title: Row(
-                        children: [
-                          Expanded(
-                            child: Text(
-                              client.name,
-                              style: const TextStyle(
-                                  fontWeight: FontWeight.bold),
-                            ),
-                          ),
-                          if (needsSync)
-                            Icon(Icons.sync_problem,
-                                size: 18,
-                                color: Colors.orange.shade600),
-                        ],
-                      ),
-                      subtitle: Text(client.phone),
-                      trailing: const Icon(Icons.arrow_forward_ios,
-                          size: 16, color: Colors.redAccent),
-                      onTap: () {
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (_) =>
-                                LedgerScreen(client: client),
-                          ),
-                        );
-                      },
                     ),
-                  );
+                    Text(
+                      hasDue ? 'Due' : 'Credit',
+                      style: TextStyle(fontSize: 10, color: Colors.grey.shade600),
+                    ),
+                  ],
+                ),
+                onTap: () {
+                  Navigator.push(context, MaterialPageRoute(builder: (_) => LedgerScreen(client: client)))
+                      .then((_) => _loadClientData()); // Reload balances when returning
                 },
               ),
-            ),
-          ),
-        ],
+            );
+          },
+        ),
       ),
     );
   }
+
+
+
+
 
   Widget _buildEmptyState() {
     return Center(
@@ -249,5 +216,14 @@ class _LedgerBookScreenState extends State<LedgerBookScreen> {
         ),
       ),
     );
+  }
+  void _showSnack(String message, {bool isError = false, bool isSuccess = false}) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).removeCurrentSnackBar();
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(message),
+      backgroundColor: isError ? Colors.red.shade700 : (isSuccess ? Colors.green.shade700 : Colors.black87),
+      behavior: SnackBarBehavior.floating,
+    ));
   }
 }

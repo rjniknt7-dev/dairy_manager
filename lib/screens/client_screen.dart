@@ -4,7 +4,6 @@ import 'package:flutter/services.dart';
 import '../services/database_helper.dart';
 import '../models/client.dart';
 import 'ledger_screen.dart';
-import '../services/firebase_sync_service.dart';
 
 class ClientScreen extends StatefulWidget {
   const ClientScreen({Key? key}) : super(key: key);
@@ -17,7 +16,6 @@ class _ClientScreenState extends State<ClientScreen>
     with SingleTickerProviderStateMixin {
   final _searchController = TextEditingController();
   final DatabaseHelper db = DatabaseHelper();
-  final FirebaseSyncService _sync = FirebaseSyncService();
 
   List<Client> _clients = [];
   List<Client> _filteredClients = [];
@@ -66,7 +64,6 @@ class _ClientScreenState extends State<ClientScreen>
         _loading = false;
       });
 
-      // Start animation only if widget is still mounted
       if (mounted) {
         _animationController.forward();
       }
@@ -85,8 +82,8 @@ class _ClientScreenState extends State<ClientScreen>
         _filteredClients = _clients.where((client) {
           return query.isEmpty ||
               client.name.toLowerCase().contains(query) ||
-              client.phone.contains(query) ||
-              client.address.toLowerCase().contains(query);
+              (client.phone?.toLowerCase().contains(query) ?? false) ||
+              (client.address?.toLowerCase().contains(query) ?? false);
         }).toList();
       });
     }
@@ -98,7 +95,6 @@ class _ClientScreenState extends State<ClientScreen>
 
     try {
       await db.deleteClient(id);
-      await _sync.syncClients();
 
       if (mounted) {
         _loadClients();
@@ -106,7 +102,9 @@ class _ClientScreenState extends State<ClientScreen>
         HapticFeedback.lightImpact();
       }
     } catch (e) {
-      if (mounted) _showSnackBar('Failed to delete client: $e', success: false);
+      if (mounted) {
+        _showSnackBar('Failed to delete client: $e', success: false);
+      }
     }
   }
 
@@ -114,7 +112,8 @@ class _ClientScreenState extends State<ClientScreen>
     return await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(20)),
         title: Row(
           children: [
             Container(
@@ -129,7 +128,8 @@ class _ClientScreenState extends State<ClientScreen>
             const Text('Delete Client'),
           ],
         ),
-        content: Text('Are you sure you want to delete "$clientName"? This action cannot be undone.'),
+        content: Text(
+            'Are you sure you want to delete "$clientName"? This action cannot be undone.'),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(false),
@@ -139,28 +139,26 @@ class _ClientScreenState extends State<ClientScreen>
             style: ElevatedButton.styleFrom(
               backgroundColor: Colors.red,
               foregroundColor: Colors.white,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(8)),
             ),
             onPressed: () => Navigator.of(context).pop(true),
             child: const Text('Delete'),
           ),
         ],
       ),
-    ) ?? false;
+    ) ??
+        false;
   }
 
+  // ✅ FIX: Await the result from add/edit screen
   Future<void> _showAddEditDialog({Client? client}) async {
     if (!mounted) return;
 
-    Navigator.of(context).push(
+    final result = await Navigator.of(context).push<bool>(
       PageRouteBuilder(
         pageBuilder: (context, animation, secondaryAnimation) =>
-            _AddEditClientScreen(
-              client: client,
-              onSaved: () {
-                _loadClients();
-              },
-            ),
+            _AddEditClientScreen(client: client),
         transitionsBuilder: (context, animation, secondaryAnimation, child) {
           return SlideTransition(
             position: Tween<Offset>(
@@ -176,6 +174,11 @@ class _ClientScreenState extends State<ClientScreen>
         transitionDuration: const Duration(milliseconds: 300),
       ),
     );
+
+    // ✅ Reload clients if saved successfully
+    if (result == true && mounted) {
+      _loadClients();
+    }
   }
 
   @override
@@ -225,16 +228,19 @@ class _ClientScreenState extends State<ClientScreen>
               style: const TextStyle(color: Colors.white, fontSize: 16),
               decoration: InputDecoration(
                 hintText: 'Search clients...',
-                hintStyle: TextStyle(color: Colors.white.withOpacity(0.7)),
+                hintStyle:
+                TextStyle(color: Colors.white.withOpacity(0.7)),
                 border: InputBorder.none,
-                prefixIcon: const Icon(Icons.search, color: Colors.white),
+                prefixIcon:
+                const Icon(Icons.search, color: Colors.white),
               ),
             ),
           )
               : const Text(
             'Clients',
             key: ValueKey('title'),
-            style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+            style: TextStyle(
+                color: Colors.white, fontWeight: FontWeight.bold),
           ),
         ),
         background: Container(
@@ -281,15 +287,14 @@ class _ClientScreenState extends State<ClientScreen>
             final client = _filteredClients[index];
             return TweenAnimationBuilder<double>(
               tween: Tween(begin: 0.0, end: 1.0),
-              duration: Duration(milliseconds: 300 + (index * 100)),
+              duration: Duration(milliseconds: 300 + (index * 50)),
               curve: Curves.easeOutBack,
               builder: (context, value, child) {
-                // ✅ FIX: Clamp the opacity value to prevent errors
                 final clampedValue = value.clamp(0.0, 1.0);
                 return Transform.translate(
-                  offset: Offset(0, 50 * (1 - clampedValue)),
+                  offset: Offset(0, 30 * (1 - clampedValue)),
                   child: Opacity(
-                    opacity: clampedValue, // ✅ Use clamped value
+                    opacity: clampedValue,
                     child: Container(
                       margin: const EdgeInsets.only(bottom: 12),
                       child: _buildClientCard(client),
@@ -338,7 +343,9 @@ class _ClientScreenState extends State<ClientScreen>
                   ),
                   child: Center(
                     child: Text(
-                      client.name.isNotEmpty ? client.name[0].toUpperCase() : 'C',
+                      client.name.isNotEmpty
+                          ? client.name[0].toUpperCase()
+                          : 'C',
                       style: const TextStyle(
                         color: Colors.white,
                         fontSize: 20,
@@ -361,27 +368,31 @@ class _ClientScreenState extends State<ClientScreen>
                       ),
                     ),
                     const SizedBox(height: 6),
-                    Row(
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.all(2),
-                          decoration: BoxDecoration(
-                            color: Colors.green.shade50,
-                            borderRadius: BorderRadius.circular(4),
+                    if (client.phone != null && client.phone!.isNotEmpty) ...[
+                      Row(
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.all(2),
+                            decoration: BoxDecoration(
+                              color: Colors.green.shade50,
+                              borderRadius: BorderRadius.circular(4),
+                            ),
+                            child: Icon(Icons.phone,
+                                size: 14, color: Colors.green.shade600),
                           ),
-                          child: Icon(Icons.phone, size: 14, color: Colors.green.shade600),
-                        ),
-                        const SizedBox(width: 6),
-                        Text(
-                          client.phone,
-                          style: TextStyle(
-                            color: Colors.grey[700],
-                            fontSize: 14,
+                          const SizedBox(width: 6),
+                          Text(
+                            client.phone!,
+                            style: TextStyle(
+                              color: Colors.grey[700],
+                              fontSize: 14,
+                            ),
                           ),
-                        ),
-                      ],
-                    ),
-                    if (client.address.isNotEmpty) ...[
+                        ],
+                      ),
+                    ],
+                    if (client.address != null &&
+                        client.address!.isNotEmpty) ...[
                       const SizedBox(height: 4),
                       Row(
                         children: [
@@ -391,12 +402,13 @@ class _ClientScreenState extends State<ClientScreen>
                               color: Colors.orange.shade50,
                               borderRadius: BorderRadius.circular(4),
                             ),
-                            child: Icon(Icons.location_on, size: 14, color: Colors.orange.shade600),
+                            child: Icon(Icons.location_on,
+                                size: 14, color: Colors.orange.shade600),
                           ),
                           const SizedBox(width: 6),
                           Expanded(
                             child: Text(
-                              client.address,
+                              client.address!,
                               style: TextStyle(
                                 color: Colors.grey[700],
                                 fontSize: 14,
@@ -411,7 +423,8 @@ class _ClientScreenState extends State<ClientScreen>
                 ),
               ),
               PopupMenuButton<String>(
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12)),
                 onSelected: (value) => _handleMenuAction(value, client),
                 itemBuilder: (context) => [
                   const PopupMenuItem(
@@ -501,7 +514,6 @@ class _ClientScreenState extends State<ClientScreen>
             duration: const Duration(milliseconds: 800),
             curve: Curves.elasticOut,
             builder: (context, value, child) {
-              // ✅ FIX: Clamp the scale value
               final clampedValue = value.clamp(0.0, 1.0);
               return Transform.scale(
                 scale: clampedValue,
@@ -550,8 +562,10 @@ class _ClientScreenState extends State<ClientScreen>
               style: ElevatedButton.styleFrom(
                 backgroundColor: Colors.blue,
                 foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(25)),
+                padding:
+                const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(25)),
                 elevation: 2,
               ),
             ),
@@ -596,15 +610,13 @@ class _ClientScreenState extends State<ClientScreen>
   }
 }
 
-// Add/Edit Client Screen as a separate widget
+// ==========================================
+// ✅ FIXED ADD/EDIT CLIENT SCREEN
+// ==========================================
 class _AddEditClientScreen extends StatefulWidget {
   final Client? client;
-  final VoidCallback onSaved;
 
-  const _AddEditClientScreen({
-    this.client,
-    required this.onSaved,
-  });
+  const _AddEditClientScreen({this.client});
 
   @override
   State<_AddEditClientScreen> createState() => _AddEditClientScreenState();
@@ -613,7 +625,6 @@ class _AddEditClientScreen extends StatefulWidget {
 class _AddEditClientScreenState extends State<_AddEditClientScreen>
     with SingleTickerProviderStateMixin {
   final _db = DatabaseHelper();
-  final _sync = FirebaseSyncService();
   final _formKey = GlobalKey<FormState>();
   final _scrollController = ScrollController();
 
@@ -634,7 +645,8 @@ class _AddEditClientScreenState extends State<_AddEditClientScreen>
 
     _nameController = TextEditingController(text: widget.client?.name ?? '');
     _phoneController = TextEditingController(text: widget.client?.phone ?? '');
-    _addressController = TextEditingController(text: widget.client?.address ?? '');
+    _addressController =
+        TextEditingController(text: widget.client?.address ?? '');
 
     _nameController.addListener(_onChange);
     _phoneController.addListener(_onChange);
@@ -668,6 +680,7 @@ class _AddEditClientScreenState extends State<_AddEditClientScreen>
     }
   }
 
+  // ✅ FIX: Removed blocking sync call
   Future<void> _saveClient() async {
     if (!_formKey.currentState!.validate()) return;
 
@@ -679,41 +692,67 @@ class _AddEditClientScreenState extends State<_AddEditClientScreen>
         name: _nameController.text.trim(),
         phone: _phoneController.text.trim(),
         address: _addressController.text.trim(),
+        updatedAt: DateTime.now(),
+        isSynced: false,
       );
 
       if (_isEditing) {
         await _db.updateClient(client);
+        debugPrint('✅ Client updated: ${client.name}');
       } else {
         await _db.insertClient(client);
+        debugPrint('✅ Client added: ${client.name}');
       }
 
-      await _sync.syncClients();
+      // ✅ Background sync will handle Firebase automatically
+      // No need to await sync here!
 
-      if (mounted) {
-        HapticFeedback.lightImpact();
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(_isEditing ? 'Client updated successfully' : 'Client added successfully'),
-            backgroundColor: Colors.green,
-            behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      if (!mounted) return;
+
+      HapticFeedback.lightImpact();
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Row(
+            children: [
+              const Icon(Icons.check_circle, color: Colors.white),
+              const SizedBox(width: 12),
+              Text(_isEditing
+                  ? 'Client updated successfully'
+                  : 'Client added successfully'),
+            ],
           ),
-        );
+          backgroundColor: Colors.green,
+          behavior: SnackBarBehavior.floating,
+          shape:
+          RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          duration: const Duration(seconds: 2),
+        ),
+      );
 
-        widget.onSaved();
-        Navigator.pop(context);
-      }
+      // ✅ Navigate back immediately with success result
+      Navigator.pop(context, true);
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed to save: $e'),
-            backgroundColor: Colors.red,
-            behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      debugPrint('❌ Error saving client: $e');
+
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Row(
+            children: [
+              const Icon(Icons.error, color: Colors.white),
+              const SizedBox(width: 12),
+              Expanded(child: Text('Failed to save: $e')),
+            ],
           ),
-        );
-      }
+          backgroundColor: Colors.red,
+          behavior: SnackBarBehavior.floating,
+          shape:
+          RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          duration: const Duration(seconds: 3),
+        ),
+      );
     } finally {
       if (mounted) setState(() => _saving = false);
     }
@@ -754,7 +793,7 @@ class _AddEditClientScreenState extends State<_AddEditClientScreen>
         elevation: 0,
         leading: IconButton(
           icon: const Icon(Icons.arrow_back),
-          onPressed: () => Navigator.pop(context),
+          onPressed: () => Navigator.pop(context, false),
         ),
       ),
       body: FadeTransition(
@@ -782,7 +821,10 @@ class _AddEditClientScreenState extends State<_AddEditClientScreen>
                               padding: const EdgeInsets.all(12),
                               decoration: BoxDecoration(
                                 gradient: LinearGradient(
-                                  colors: [Colors.blue.shade400, Colors.blue.shade600],
+                                  colors: [
+                                    Colors.blue.shade400,
+                                    Colors.blue.shade600
+                                  ],
                                 ),
                                 borderRadius: BorderRadius.circular(12),
                               ),
@@ -794,7 +836,9 @@ class _AddEditClientScreenState extends State<_AddEditClientScreen>
                             ),
                             const SizedBox(width: 16),
                             Text(
-                              _isEditing ? 'Edit Information' : 'Client Information',
+                              _isEditing
+                                  ? 'Edit Information'
+                                  : 'Client Information',
                               style: const TextStyle(
                                 fontSize: 20,
                                 fontWeight: FontWeight.bold,
@@ -814,7 +858,10 @@ class _AddEditClientScreenState extends State<_AddEditClientScreen>
                             filled: true,
                             fillColor: Colors.grey.shade50,
                           ),
-                          validator: (v) => v == null || v.trim().isEmpty ? 'Enter client name' : null,
+                          validator: (v) => v == null || v.trim().isEmpty
+                              ? 'Enter client name'
+                              : null,
+                          enabled: !_saving,
                         ),
                         const SizedBox(height: 16),
                         TextFormField(
@@ -834,6 +881,7 @@ class _AddEditClientScreenState extends State<_AddEditClientScreen>
                             LengthLimitingTextInputFormatter(10),
                           ],
                           validator: _validatePhoneNumber,
+                          enabled: !_saving,
                         ),
                         const SizedBox(height: 16),
                         TextFormField(
@@ -848,6 +896,7 @@ class _AddEditClientScreenState extends State<_AddEditClientScreen>
                             fillColor: Colors.grey.shade50,
                           ),
                           maxLines: 3,
+                          enabled: !_saving,
                         ),
                         if (_hasChanges) ...[
                           const SizedBox(height: 16),
@@ -860,11 +909,18 @@ class _AddEditClientScreenState extends State<_AddEditClientScreen>
                             ),
                             child: Row(
                               children: [
-                                Icon(Icons.info_outline, color: Colors.blue.shade600),
+                                Icon(Icons.info_outline,
+                                    color: Colors.blue.shade600),
                                 const SizedBox(width: 8),
-                                Text(
-                                  _isEditing ? 'Changes ready to save' : 'Ready to add client',
-                                  style: TextStyle(color: Colors.blue.shade700),
+                                Expanded(
+                                  child: Text(
+                                    _isEditing
+                                        ? 'Changes ready to save (will sync automatically)'
+                                        : 'Ready to add client (will sync automatically)',
+                                    style: TextStyle(
+                                        color: Colors.blue.shade700,
+                                        fontSize: 13),
+                                  ),
                                 ),
                               ],
                             ),
@@ -879,7 +935,9 @@ class _AddEditClientScreenState extends State<_AddEditClientScreen>
                   children: [
                     Expanded(
                       child: TextButton(
-                        onPressed: () => Navigator.pop(context),
+                        onPressed: _saving
+                            ? null
+                            : () => Navigator.pop(context, false),
                         style: TextButton.styleFrom(
                           padding: const EdgeInsets.symmetric(vertical: 16),
                           shape: RoundedRectangleBorder(
@@ -892,14 +950,19 @@ class _AddEditClientScreenState extends State<_AddEditClientScreen>
                     const SizedBox(width: 16),
                     Expanded(
                       child: ElevatedButton(
-                        onPressed: _hasChanges && !_saving ? _saveClient : null,
+                        onPressed:
+                        _hasChanges && !_saving ? _saveClient : null,
                         style: ElevatedButton.styleFrom(
-                          backgroundColor: _hasChanges ? Colors.blue : Colors.grey.shade300,
-                          foregroundColor: _hasChanges ? Colors.white : Colors.grey.shade500,
+                          backgroundColor:
+                          _hasChanges ? Colors.blue : Colors.grey.shade300,
+                          foregroundColor: _hasChanges
+                              ? Colors.white
+                              : Colors.grey.shade500,
                           padding: const EdgeInsets.symmetric(vertical: 16),
                           shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(12),
                           ),
+                          elevation: _hasChanges ? 2 : 0,
                         ),
                         child: _saving
                             ? const SizedBox(
@@ -910,7 +973,13 @@ class _AddEditClientScreenState extends State<_AddEditClientScreen>
                             color: Colors.white,
                           ),
                         )
-                            : Text(_isEditing ? 'Update Client' : 'Add Client'),
+                            : Text(
+                          _isEditing ? 'Update Client' : 'Add Client',
+                          style: const TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
                       ),
                     ),
                   ],
