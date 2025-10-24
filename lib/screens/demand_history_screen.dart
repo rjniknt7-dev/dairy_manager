@@ -1,4 +1,4 @@
-// lib/screens/demand_history_screen.dart
+// lib/screens/demand_history_screen.dart - INTELLIGENT VERSION
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../services/database_helper.dart';
@@ -15,11 +15,9 @@ class DemandHistoryScreen extends StatefulWidget {
 class _DemandHistoryScreenState extends State<DemandHistoryScreen> {
   final db = DatabaseHelper();
 
-  // Date range
   DateTime _startDate = DateTime.now().subtract(const Duration(days: 30));
   DateTime _endDate = DateTime.now();
 
-  // Data
   List<Map<String, dynamic>> _history = [];
   List<Map<String, dynamic>> _productSummary = [];
   double _totalCost = 0.0;
@@ -38,11 +36,11 @@ class _DemandHistoryScreenState extends State<DemandHistoryScreen> {
     setState(() => _isLoading = true);
 
     try {
-      // Load history
-      final history = await db.getDemandHistory();
+      // Get only batches that have entries
+      final allBatches = await db.getBatchesWithEntries();
 
       // Filter by date range
-      final filteredHistory = history.where((batch) {
+      final filteredHistory = allBatches.where((batch) {
         final dateStr = batch['demandDate'] as String?;
         if (dateStr == null) return false;
 
@@ -55,7 +53,6 @@ class _DemandHistoryScreenState extends State<DemandHistoryScreen> {
         }
       }).toList();
 
-      // Calculate product summary for date range
       await _calculateProductSummary();
 
       if (!mounted) return;
@@ -74,7 +71,6 @@ class _DemandHistoryScreenState extends State<DemandHistoryScreen> {
 
   Future<void> _calculateProductSummary() async {
     try {
-      // Get all demands in date range
       final demands = await db.rawQuery('''
         SELECT 
           d.productId,
@@ -143,8 +139,6 @@ class _DemandHistoryScreenState extends State<DemandHistoryScreen> {
             colorScheme: ColorScheme.light(
               primary: Colors.blue.shade600,
               onPrimary: Colors.white,
-              surface: Colors.white,
-              onSurface: Colors.black,
             ),
           ),
           child: child!,
@@ -161,12 +155,6 @@ class _DemandHistoryScreenState extends State<DemandHistoryScreen> {
     }
   }
 
-  // In your demand_history_screen.dart - Replace the _exportAnalysisReport method
-
-  // Import at the top
-
-
-// Replace _exportAnalysisReport method
   Future<void> _exportAnalysisReport() async {
     if (_productSummary.isEmpty) {
       _showMessage('No data to export');
@@ -188,70 +176,12 @@ class _DemandHistoryScreenState extends State<DemandHistoryScreen> {
     );
   }
 
-// For single day export
-  Future<void> _exportPdf(int batchId, String date) async {
-    try {
-      final totals = await db.getBatchDetails(batchId);
-
-      if (totals.isEmpty) {
-        _showMessage('No data to export');
-        return;
-      }
-
-      // Convert to the format needed for DemandPdfExportScreen
-      final productSummary = totals.map((item) {
-        return {
-          'productName': item['productName'],
-          'totalQuantity': item['totalQty'],
-          'costPrice': 0.0, // Add if you have this data
-          'sellingPrice': 0.0, // Add if you have this data
-          'totalCost': 0.0, // Add if you have this data
-          'totalRevenue': 0.0, // Add if you have this data
-          'profit': 0.0, // Add if you have this data
-        };
-      }).toList();
-
-      final parsedDate = DateTime.parse(date);
-
-      Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (context) => DemandPdfExportScreen(
-            startDate: parsedDate,
-            endDate: parsedDate,
-            productSummary: productSummary,
-            totalCost: 0.0,
-            totalQuantity: totals.fold(0.0, (sum, item) => sum + (item['totalQty'] as num).toDouble()),
-            isSingleDay: true,
-          ),
-        ),
-      );
-    } catch (e) {
-      if (mounted) {
-        _showMessage('Failed to export PDF: $e', isError: true);
-      }
-    }
-  }
-
-// Helper method to calculate total profit
-  double _calculateTotalProfit() {
-    return _productSummary.fold<double>(
-      0,
-          (sum, product) => sum + (product['profit'] as num).toDouble(),
-    );
-  }
-
-  void _showMessage(String message, {bool isError = false, bool isSuccess = false}) {
+  void _showMessage(String message, {bool isError = false}) {
     if (!mounted) return;
-
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(message),
-        backgroundColor: isError
-            ? Colors.red.shade600
-            : isSuccess
-            ? Colors.green.shade600
-            : Colors.grey.shade800,
+        backgroundColor: isError ? Colors.red.shade600 : Colors.grey.shade800,
         behavior: SnackBarBehavior.floating,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
         margin: const EdgeInsets.all(8),
@@ -264,22 +194,15 @@ class _DemandHistoryScreenState extends State<DemandHistoryScreen> {
     return Scaffold(
       backgroundColor: const Color(0xFFF5F5F5),
       appBar: AppBar(
-        title: const Text('Demand History & Analysis'),
+        title: const Text('Demand History'),
         backgroundColor: Colors.white,
         foregroundColor: Colors.black87,
         elevation: 0,
         actions: [
           IconButton(
-            onPressed: () {
-              setState(() => _showAnalysis = !_showAnalysis);
-            },
+            onPressed: () => setState(() => _showAnalysis = !_showAnalysis),
             icon: Icon(_showAnalysis ? Icons.history : Icons.analytics),
             tooltip: _showAnalysis ? 'Show History' : 'Show Analysis',
-          ),
-          IconButton(
-            onPressed: _loadData,
-            icon: const Icon(Icons.refresh),
-            tooltip: 'Refresh',
           ),
         ],
       ),
@@ -294,9 +217,8 @@ class _DemandHistoryScreenState extends State<DemandHistoryScreen> {
                 Expanded(
                   child: InkWell(
                     onTap: _selectDateRange,
-                    borderRadius: BorderRadius.circular(8),
                     child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                      padding: const EdgeInsets.all(12),
                       decoration: BoxDecoration(
                         border: Border.all(color: Colors.grey.shade300),
                         borderRadius: BorderRadius.circular(8),
@@ -307,54 +229,43 @@ class _DemandHistoryScreenState extends State<DemandHistoryScreen> {
                           const SizedBox(width: 8),
                           Expanded(
                             child: Text(
-                              '${DateFormat('dd/MM/yyyy').format(_startDate)} - ${DateFormat('dd/MM/yyyy').format(_endDate)}',
+                              '${DateFormat('dd/MM/yy').format(_startDate)} - ${DateFormat('dd/MM/yy').format(_endDate)}',
                               style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
                             ),
                           ),
-                          Icon(Icons.arrow_drop_down, color: Colors.grey.shade600),
                         ],
                       ),
                     ),
                   ),
                 ),
-                const SizedBox(width: 12),
-                ElevatedButton.icon(
-                  onPressed: _showAnalysis ? _exportAnalysisReport : null,
-                  icon: const Icon(Icons.download, size: 18),
-                  label: const Text('Export'),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.blue.shade600,
-                    foregroundColor: Colors.white,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(8),
+                if (_showAnalysis && _productSummary.isNotEmpty) ...[
+                  const SizedBox(width: 12),
+                  ElevatedButton.icon(
+                    onPressed: _exportAnalysisReport,
+                    icon: const Icon(Icons.download, size: 18),
+                    label: const Text('Export'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.blue.shade600,
+                      foregroundColor: Colors.white,
                     ),
                   ),
-                ),
+                ],
               ],
             ),
           ),
 
-          // Summary Cards (visible when analysis is shown)
-          if (_showAnalysis && !_isLoading)
+          // Summary Cards
+          if (_showAnalysis && !_isLoading && _productSummary.isNotEmpty)
             Container(
               padding: const EdgeInsets.all(16),
               child: Row(
                 children: [
                   Expanded(
                     child: _buildSummaryCard(
-                      'Total Quantity',
-                      _totalQuantity.toStringAsFixed(1),
-                      Icons.inventory,
+                      'Orders',
+                      _history.length.toString(),
+                      Icons.receipt_long,
                       Colors.blue,
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: _buildSummaryCard(
-                      'Total Cost',
-                      '₹${(_totalCost / 1000).toStringAsFixed(1)}K',
-                      Icons.payments,
-                      Colors.green,
                     ),
                   ),
                   const SizedBox(width: 12),
@@ -362,7 +273,16 @@ class _DemandHistoryScreenState extends State<DemandHistoryScreen> {
                     child: _buildSummaryCard(
                       'Products',
                       _productSummary.length.toString(),
-                      Icons.category,
+                      Icons.inventory,
+                      Colors.purple,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: _buildSummaryCard(
+                      'Quantity',
+                      _totalQuantity.toStringAsFixed(0),
+                      Icons.shopping_cart,
                       Colors.orange,
                     ),
                   ),
@@ -392,282 +312,30 @@ class _DemandHistoryScreenState extends State<DemandHistoryScreen> {
         boxShadow: [
           BoxShadow(
             color: Colors.black.withOpacity(0.05),
-            blurRadius: 10,
+            blurRadius: 8,
             offset: const Offset(0, 2),
           ),
         ],
       ),
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(6),
-                decoration: BoxDecoration(
-                  color: color.withOpacity(0.1),
-                  borderRadius: BorderRadius.circular(6),
-                ),
-                child: Icon(icon, size: 16, color: color),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  title,
-                  style: TextStyle(
-                    fontSize: 11,
-                    color: Colors.grey.shade600,
-                  ),
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-            ],
-          ),
+          Icon(icon, size: 24, color: color),
           const SizedBox(height: 8),
           Text(
             value,
-            style: const TextStyle(
-              fontSize: 18,
+            style: TextStyle(
+              fontSize: 20,
               fontWeight: FontWeight.bold,
+              color: color,
             ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            title,
+            style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
           ),
         ],
       ),
-    );
-  }
-
-  Widget _buildAnalysisView() {
-    if (_productSummary.isEmpty) {
-      return Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(Icons.analytics_outlined, size: 64, color: Colors.grey.shade400),
-            const SizedBox(height: 16),
-            Text(
-              'No data for selected period',
-              style: TextStyle(
-                fontSize: 16,
-                color: Colors.grey.shade600,
-              ),
-            ),
-          ],
-        ),
-      );
-    }
-
-    return ListView(
-      padding: const EdgeInsets.all(16),
-      children: [
-        // Product Analysis Table
-        Container(
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(12),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withOpacity(0.05),
-                blurRadius: 10,
-                offset: const Offset(0, 2),
-              ),
-            ],
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: Colors.blue.shade50,
-                  borderRadius: const BorderRadius.vertical(top: Radius.circular(12)),
-                ),
-                child: Row(
-                  children: [
-                    Icon(Icons.analytics, color: Colors.blue.shade700),
-                    const SizedBox(width: 12),
-                    const Text(
-                      'Product Cost Analysis',
-                      style: TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              // Table Header
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                decoration: BoxDecoration(
-                  color: Colors.grey.shade100,
-                ),
-                child: Row(
-                  children: [
-                    const Expanded(
-                      flex: 3,
-                      child: Text(
-                        'Product',
-                        style: TextStyle(fontWeight: FontWeight.w600, fontSize: 12),
-                      ),
-                    ),
-                    const Expanded(
-                      flex: 2,
-                      child: Text(
-                        'Quantity',
-                        textAlign: TextAlign.center,
-                        style: TextStyle(fontWeight: FontWeight.w600, fontSize: 12),
-                      ),
-                    ),
-                    const Expanded(
-                      flex: 2,
-                      child: Text(
-                        'C.P.',
-                        textAlign: TextAlign.center,
-                        style: TextStyle(fontWeight: FontWeight.w600, fontSize: 12),
-                      ),
-                    ),
-                    const Expanded(
-                      flex: 3,
-                      child: Text(
-                        'Total Cost',
-                        textAlign: TextAlign.right,
-                        style: TextStyle(fontWeight: FontWeight.w600, fontSize: 12),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              // Table Rows
-              ListView.separated(
-                shrinkWrap: true,
-                physics: const NeverScrollableScrollPhysics(),
-                itemCount: _productSummary.length,
-                separatorBuilder: (_, __) => const Divider(height: 1),
-                itemBuilder: (context, index) {
-                  final product = _productSummary[index];
-                  return Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                    child: Row(
-                      children: [
-                        Expanded(
-                          flex: 3,
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                product['productName'] ?? '',
-                                style: const TextStyle(
-                                  fontWeight: FontWeight.w500,
-                                  fontSize: 14,
-                                ),
-                              ),
-                              Text(
-                                'Profit: ₹${product['profit'].toStringAsFixed(2)}',
-                                style: TextStyle(
-                                  fontSize: 11,
-                                  color: product['profit'] > 0
-                                      ? Colors.green.shade600
-                                      : Colors.red.shade600,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                        Expanded(
-                          flex: 2,
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                            decoration: BoxDecoration(
-                              color: Colors.blue.shade50,
-                              borderRadius: BorderRadius.circular(6),
-                            ),
-                            child: Text(
-                              product['totalQuantity'].toStringAsFixed(1),
-                              textAlign: TextAlign.center,
-                              style: const TextStyle(
-                                fontSize: 13,
-                                fontWeight: FontWeight.w500,
-                              ),
-                            ),
-                          ),
-                        ),
-                        Expanded(
-                          flex: 2,
-                          child: Text(
-                            '₹${product['costPrice'].toStringAsFixed(2)}',
-                            textAlign: TextAlign.center,
-                            style: const TextStyle(fontSize: 13),
-                          ),
-                        ),
-                        Expanded(
-                          flex: 3,
-                          child: Text(
-                            '₹${product['totalCost'].toStringAsFixed(2)}',
-                            textAlign: TextAlign.right,
-                            style: const TextStyle(
-                              fontSize: 14,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  );
-                },
-              ),
-              // Total Row
-              Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: Colors.grey.shade100,
-                  borderRadius: const BorderRadius.vertical(bottom: Radius.circular(12)),
-                ),
-                child: Row(
-                  children: [
-                    const Expanded(
-                      flex: 3,
-                      child: Text(
-                        'TOTAL',
-                        style: TextStyle(
-                          fontWeight: FontWeight.bold,
-                          fontSize: 14,
-                        ),
-                      ),
-                    ),
-                    Expanded(
-                      flex: 2,
-                      child: Text(
-                        _totalQuantity.toStringAsFixed(1),
-                        textAlign: TextAlign.center,
-                        style: const TextStyle(
-                          fontWeight: FontWeight.bold,
-                          fontSize: 14,
-                        ),
-                      ),
-                    ),
-                    const Expanded(
-                      flex: 2,
-                      child: Text(''),
-                    ),
-                    Expanded(
-                      flex: 3,
-                      child: Text(
-                        '₹${_totalCost.toStringAsFixed(2)}',
-                        textAlign: TextAlign.right,
-                        style: TextStyle(
-                          fontWeight: FontWeight.bold,
-                          fontSize: 15,
-                          color: Colors.blue.shade700,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
-      ],
     );
   }
 
@@ -677,10 +345,10 @@ class _DemandHistoryScreenState extends State<DemandHistoryScreen> {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(Icons.history, size: 64, color: Colors.grey.shade400),
+            Icon(Icons.calendar_today, size: 64, color: Colors.grey.shade300),
             const SizedBox(height: 16),
             Text(
-              'No demand history',
+              'No orders found',
               style: TextStyle(
                 fontSize: 18,
                 fontWeight: FontWeight.w500,
@@ -690,10 +358,7 @@ class _DemandHistoryScreenState extends State<DemandHistoryScreen> {
             const SizedBox(height: 8),
             Text(
               'for selected date range',
-              style: TextStyle(
-                fontSize: 14,
-                color: Colors.grey.shade600,
-              ),
+              style: TextStyle(fontSize: 14, color: Colors.grey.shade600),
             ),
           ],
         ),
@@ -710,67 +375,247 @@ class _DemandHistoryScreenState extends State<DemandHistoryScreen> {
           final isClosed = (batch['closed'] ?? 0) == 1;
           final date = batch['demandDate'] ?? '';
           final batchId = batch['id'] as int;
+          final entryCount = batch['entryCount'] ?? 0;
+          final totalQty = (batch['totalQuantity'] as num?)?.toDouble() ?? 0.0;
+
+          DateTime? parsedDate;
+          try {
+            parsedDate = DateTime.parse(date);
+          } catch (e) {
+            parsedDate = null;
+          }
 
           return Card(
             margin: const EdgeInsets.only(bottom: 12),
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: ListTile(
-              contentPadding: const EdgeInsets.all(16),
-              leading: Container(
-                width: 48,
-                height: 48,
-                decoration: BoxDecoration(
-                  color: isClosed
-                      ? Colors.green.shade50
-                      : Colors.orange.shade50,
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Icon(
-                  isClosed ? Icons.check_circle : Icons.schedule,
-                  color: isClosed
-                      ? Colors.green.shade600
-                      : Colors.orange.shade600,
-                ),
-              ),
-              title: Text(
-                date,
-                style: const TextStyle(
-                  fontWeight: FontWeight.w600,
-                  fontSize: 16,
-                ),
-              ),
-              subtitle: Padding(
-                padding: const EdgeInsets.only(top: 4),
-                child: Text(
-                  isClosed ? 'Closed' : 'Open',
-                  style: TextStyle(
-                    color: isClosed
-                        ? Colors.green.shade600
-                        : Colors.orange.shade600,
-                    fontWeight: FontWeight.w500,
-                    fontSize: 13,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            child: InkWell(
+              onTap: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => DemandDetailsScreen(batchId: batchId),
                   ),
-                ),
-              ),
-              trailing: IconButton(
-                icon: const Icon(Icons.arrow_forward_ios, size: 16),
-                onPressed: () {
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder: (context) => DemandDetailsScreen(
-                        batchId: batchId,
+                );
+              },
+              borderRadius: BorderRadius.circular(12),
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Row(
+                  children: [
+                    Container(
+                      width: 56,
+                      height: 56,
+                      decoration: BoxDecoration(
+                        color: isClosed ? Colors.green.shade50 : Colors.orange.shade50,
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Text(
+                            parsedDate != null ? DateFormat('dd').format(parsedDate) : '--',
+                            style: TextStyle(
+                              fontSize: 20,
+                              fontWeight: FontWeight.bold,
+                              color: isClosed ? Colors.green.shade700 : Colors.orange.shade700,
+                            ),
+                          ),
+                          Text(
+                            parsedDate != null ? DateFormat('MMM').format(parsedDate) : '--',
+                            style: TextStyle(
+                              fontSize: 11,
+                              color: isClosed ? Colors.green.shade600 : Colors.orange.shade600,
+                            ),
+                          ),
+                        ],
                       ),
                     ),
-                  );
-                },
+                    const SizedBox(width: 16),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            parsedDate != null
+                                ? DateFormat('EEEE, dd MMM yyyy').format(parsedDate)
+                                : date,
+                            style: const TextStyle(
+                              fontWeight: FontWeight.w600,
+                              fontSize: 15,
+                            ),
+                          ),
+                          const SizedBox(height: 6),
+                          Row(
+                            children: [
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                                decoration: BoxDecoration(
+                                  color: isClosed
+                                      ? Colors.green.shade100
+                                      : Colors.orange.shade100,
+                                  borderRadius: BorderRadius.circular(4),
+                                ),
+                                child: Text(
+                                  isClosed ? 'CLOSED' : 'OPEN',
+                                  style: TextStyle(
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.bold,
+                                    color: isClosed
+                                        ? Colors.green.shade700
+                                        : Colors.orange.shade700,
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              Text(
+                                '$entryCount entries • Qty: ${totalQty.toStringAsFixed(0)}',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: Colors.grey.shade600,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                    Icon(Icons.arrow_forward_ios, size: 16, color: Colors.grey.shade400),
+                  ],
+                ),
               ),
             ),
           );
         },
       ),
+    );
+  }
+
+  Widget _buildAnalysisView() {
+    if (_productSummary.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.analytics_outlined, size: 64, color: Colors.grey.shade400),
+            const SizedBox(height: 16),
+            Text(
+              'No data for analysis',
+              style: TextStyle(fontSize: 16, color: Colors.grey.shade600),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        Container(
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(12),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.05),
+                blurRadius: 10,
+                offset: const Offset(0, 2),
+              ),
+            ],
+          ),
+          child: Column(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: Colors.blue.shade50,
+                  borderRadius: const BorderRadius.vertical(top: Radius.circular(12)),
+                ),
+                child: Row(
+                  children: [
+                    Icon(Icons.analytics, color: Colors.blue.shade700),
+                    const SizedBox(width: 12),
+                    const Text(
+                      'Product Analysis',
+                      style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                    ),
+                  ],
+                ),
+              ),
+              ListView.separated(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                itemCount: _productSummary.length,
+                separatorBuilder: (_, __) => const Divider(height: 1),
+                itemBuilder: (context, index) {
+                  final product = _productSummary[index];
+                  return ListTile(
+                    title: Text(
+                      product['productName'] ?? '',
+                      style: const TextStyle(fontWeight: FontWeight.w500),
+                    ),
+                    subtitle: Text(
+                      'C.P: ₹${product['costPrice'].toStringAsFixed(2)} • Cost: ₹${product['totalCost'].toStringAsFixed(2)}',
+                      style: const TextStyle(fontSize: 12),
+                    ),
+                    trailing: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
+                        Text(
+                          'Qty: ${product['totalQuantity'].toStringAsFixed(1)}',
+                          style: const TextStyle(fontWeight: FontWeight.bold),
+                        ),
+                        Text(
+                          'Profit: ₹${product['profit'].toStringAsFixed(2)}',
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: product['profit'] > 0
+                                ? Colors.green.shade600
+                                : Colors.red.shade600,
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                },
+              ),
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: Colors.grey.shade100,
+                  borderRadius: const BorderRadius.vertical(bottom: Radius.circular(12)),
+                ),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text(
+                      'TOTAL',
+                      style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+                    ),
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
+                        Text(
+                          'Qty: ${_totalQuantity.toStringAsFixed(1)}',
+                          style: const TextStyle(fontWeight: FontWeight.bold),
+                        ),
+                        Text(
+                          'Cost: ₹${_totalCost.toStringAsFixed(2)}',
+                          style: TextStyle(
+                            fontSize: 13,
+                            color: Colors.blue.shade700,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
     );
   }
 }

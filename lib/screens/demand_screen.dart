@@ -1,12 +1,12 @@
-// lib/screens/demand_screen.dart - FIXED VERSION
+// lib/screens/demand_screen.dart - FINAL VERSION
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:printing/printing.dart';
-import '../services/pdf_service.dart';
+import 'package:intl/intl.dart';
+import 'package:sqflite/sqflite.dart';
 import '../services/database_helper.dart';
 import '../models/client.dart';
 import '../models/product.dart';
-import 'demand_details_screen.dart';
+import 'demand_edit_screen.dart'; // NEW
 import 'demand_history_screen.dart';
 
 class DemandScreen extends StatefulWidget {
@@ -22,15 +22,13 @@ class _DemandScreenState extends State<DemandScreen> {
   List<Client> _clients = [];
   List<Product> _products = [];
 
-  int? _selectedClientId;
-  int? _selectedProductId;
-  final _quantityController = TextEditingController();
-
   int? _currentBatchId;
   bool _isBatchClosed = false;
+  bool _batchExists = false;
+  DateTime _batchDate = DateTime.now();
 
   List<Map<String, dynamic>> _productTotals = [];
-  List<Map<String, dynamic>> _clientOrders = [];
+  Map<String, dynamic>? _batchStats;
 
   bool _isLoading = true;
 
@@ -39,34 +37,112 @@ class _DemandScreenState extends State<DemandScreen> {
     super.initState();
     _loadData();
   }
+  Future<void> _debugDatabase() async {
+    debugPrint('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    debugPrint('📊 DATABASE DEBUG CHECK');
+    debugPrint('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 
-  @override
-  void dispose() {
-    _quantityController.dispose();
-    super.dispose();
+    final database = await db.database;
+
+    // Get today's date
+    final today = DateTime.now();
+    final todayStr = today.toIso8601String().substring(0, 10);
+    debugPrint('📅 Today: $todayStr');
+
+    // Get all batches
+    final allBatches = await database.query(
+      'demand_batch',
+      orderBy: 'demandDate DESC',
+      limit: 5,
+    );
+
+    debugPrint('📦 Last 5 batches in database:');
+    for (var batch in allBatches) {
+      final entryCount = await database.rawQuery(
+        'SELECT COUNT(*) as count FROM demand WHERE batchId = ? AND isDeleted = 0',
+        [batch['id']],
+      );
+      final count = Sqflite.firstIntValue(entryCount) ?? 0;
+
+      debugPrint('  - ID: ${batch['id']}');
+      debugPrint('    Date: ${batch['demandDate']}');
+      debugPrint('    Closed: ${batch['closed']}');
+      debugPrint('    Entries: $count');
+      debugPrint('    IsDeleted: ${batch['isDeleted']}');
+    }
+
+    // Check today's batch specifically
+    final todayBatch = await database.query(
+      'demand_batch',
+      where: 'demandDate = ? AND isDeleted = 0',
+      whereArgs: [todayStr],
+    );
+
+    if (todayBatch.isNotEmpty) {
+      debugPrint('✅ Today\'s batch found:');
+      debugPrint('   ${todayBatch.first}');
+    } else {
+      debugPrint('❌ No batch found for today ($todayStr)');
+    }
+
+    debugPrint('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
   }
 
   Future<void> _loadData() async {
+    debugPrint('═══════════════════════════════════════');
+    debugPrint('🔍 DEMAND SCREEN _loadData() CALLED');
+    debugPrint('═══════════════════════════════════════');
+
     setState(() => _isLoading = true);
 
+    // ✅ Run database debug check
+    await _debugDatabase();
+
     try {
-      // Load clients and products
       final clients = await db.getClients();
       final products = await db.getProducts();
+      debugPrint('✅ Loaded ${clients.length} clients, ${products.length} products');
 
-      // Get or create today's batch
       final today = DateTime.now();
-      final batchId = await db.getOrCreateBatchForDate(today);
+      final todayStr = today.toIso8601String().substring(0, 10);
 
-      // Get batch details
-      final batchInfo = await db.getBatchById(batchId);
-      final isClosed = (batchInfo?['closed'] ?? 0) == 1;
+      debugPrint('🔍 Looking for batch on date: $todayStr');
 
-      // Get current batch totals
-      final totals = await db.getCurrentBatchTotals(batchId);
+      // Get batch ID
+      int? batchId = await db.getBatchIdForDate(today);
 
-      // Get client-wise details
-      final clientDetails = await db.getBatchClientDetails(batchId);
+      debugPrint('🔍 getBatchIdForDate returned: $batchId');
+
+      bool isClosed = false;
+      bool hasEntries = false;
+
+      List<Map<String, dynamic>> totals = [];
+      Map<String, dynamic>? stats;
+
+      if (batchId != null) {
+        debugPrint('🔍 Batch found, getting details...');
+
+        final batchInfo = await db.getBatchById(batchId);
+        debugPrint('🔍 Batch info: $batchInfo');
+
+        isClosed = (batchInfo?['closed'] ?? 0) == 1;
+
+        totals = await db.getCurrentBatchTotals(batchId);
+        debugPrint('🔍 Product totals: ${totals.length} products');
+
+        stats = await db.getBatchStats(batchId);
+        debugPrint('🔍 Stats: $stats');
+
+        hasEntries = totals.isNotEmpty;
+
+        debugPrint('📊 BATCH STATE:');
+        debugPrint('   - ID: $batchId');
+        debugPrint('   - Closed: $isClosed');
+        debugPrint('   - Has Entries: $hasEntries');
+        debugPrint('   - Total Products: ${totals.length}');
+      } else {
+        debugPrint('⚠️ No batch found for today');
+      }
 
       if (!mounted) return;
 
@@ -75,60 +151,26 @@ class _DemandScreenState extends State<DemandScreen> {
         _products = products;
         _currentBatchId = batchId;
         _isBatchClosed = isClosed;
+        _batchExists = hasEntries;
+        _batchDate = today;
         _productTotals = totals;
-        _clientOrders = clientDetails;
+        _batchStats = stats;
         _isLoading = false;
       });
-    } catch (e) {
+
+      debugPrint('✅ STATE SET:');
+      debugPrint('   - _currentBatchId: $_currentBatchId');
+      debugPrint('   - _batchExists: $_batchExists');
+      debugPrint('   - _isBatchClosed: $_isBatchClosed');
+      debugPrint('   - _productTotals.length: ${_productTotals.length}');
+      debugPrint('═══════════════════════════════════════');
+
+    } catch (e, stack) {
+      debugPrint('❌ ERROR in _loadData: $e');
+      debugPrint('Stack: $stack');
       if (mounted) {
         setState(() => _isLoading = false);
         _showMessage('Error loading data: $e', isError: true);
-      }
-    }
-  }
-
-  Future<void> _addDemandEntry() async {
-    if (_isBatchClosed) {
-      _showMessage('Today\'s demand is closed', isError: true);
-      return;
-    }
-
-    if (_selectedClientId == null || _selectedProductId == null) {
-      _showMessage('Please select client and product');
-      return;
-    }
-
-    final quantity = double.tryParse(_quantityController.text.trim());
-    if (quantity == null || quantity <= 0) {
-      _showMessage('Please enter valid quantity');
-      return;
-    }
-
-    try {
-      await db.insertDemandEntry(
-        batchId: _currentBatchId!,
-        clientId: _selectedClientId!,
-        productId: _selectedProductId!,
-        quantity: quantity,
-      );
-
-      // Clear form
-      setState(() {
-        _selectedClientId = null;
-        _selectedProductId = null;
-        _quantityController.clear();
-      });
-
-      // Reload data
-      await _loadData();
-
-      if (mounted) {
-        _showMessage('Demand added successfully', isSuccess: true);
-        HapticFeedback.lightImpact();
-      }
-    } catch (e) {
-      if (mounted) {
-        _showMessage('Failed to add demand: $e', isError: true);
       }
     }
   }
@@ -141,76 +183,143 @@ class _DemandScreenState extends State<DemandScreen> {
       return;
     }
 
-    final confirmed = await showDialog<bool>(
+    final confirmed = await _showCloseConfirmDialog();
+    if (confirmed != true) return;
+
+    try {
+      await db.closeBatch(_currentBatchId!, deductStock: false, createNextDay: false);
+
+      if (mounted) {
+        _showMessage('Demand closed successfully', isSuccess: true);
+        await _loadData();
+        HapticFeedback.mediumImpact();
+      }
+    } catch (e) {
+      if (mounted) {
+        _showMessage('Failed to close: $e', isError: true);
+      }
+    }
+  }
+
+  Future<bool?> _showCloseConfirmDialog() async {
+    return showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-        title: const Text('Close Today\'s Demand?'),
-        content: const Text(
-          'This will finalize today\'s demand and update stock quantities.\n\n'
-              'You won\'t be able to add more demands for today.',
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: Colors.green.shade50,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Icon(Icons.lock_clock, color: Colors.green.shade700),
+            ),
+            const SizedBox(width: 12),
+            const Text('Close Today\'s Demand?', style: TextStyle(fontSize: 18)),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'This will finalize today\'s demand order.',
+              style: TextStyle(fontSize: 15),
+            ),
+            const SizedBox(height: 16),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.grey.shade100,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Column(
+                children: [
+                  _buildStatRow('Products', '${_batchStats?['productCount'] ?? 0}', Icons.inventory_2),
+                  const Divider(height: 16),
+                  _buildStatRow('Clients', '${_batchStats?['clientCount'] ?? 0}', Icons.people),
+                  const Divider(height: 16),
+                  _buildStatRow(
+                    'Total Qty',
+                    (_batchStats?['totalQuantity'] ?? 0).toStringAsFixed(1),
+                    Icons.shopping_cart,
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
+            Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: Colors.blue.shade50,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.blue.shade200),
+              ),
+              child: Row(
+                children: [
+                  Icon(Icons.info_outline, size: 18, color: Colors.blue.shade700),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'You can edit this later using the Edit button',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Colors.blue.shade900,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
             child: const Text('Cancel'),
           ),
-          ElevatedButton(
+          ElevatedButton.icon(
             onPressed: () => Navigator.pop(context, true),
+            icon: const Icon(Icons.check_circle, size: 18),
+            label: const Text('Close Demand'),
             style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.green,
+              backgroundColor: Colors.green.shade600,
               foregroundColor: Colors.white,
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(8),
+              ),
             ),
-            child: const Text('Close & Update Stock'),
           ),
         ],
       ),
     );
-
-    if (confirmed != true) return;
-
-    try {
-      // Close batch and update stock (use deductStock: true if you want to reduce stock)
-      await db.closeBatch(_currentBatchId!, deductStock: false, createNextDay: false);
-
-      if (mounted) {
-        _showMessage('Demand closed and stock updated', isSuccess: true);
-        await _loadData();
-        HapticFeedback.mediumImpact();
-      }
-    } catch (e) {
-      if (mounted) {
-        _showMessage('Failed to close batch: $e', isError: true);
-      }
-    }
   }
 
-  Future<void> _exportPdf() async {
-    if (_productTotals.isEmpty) {
-      _showMessage('No data to export');
-      return;
-    }
-
-    try {
-      final date = DateTime.now().toIso8601String().substring(0, 10);
-      final pdfData = await PDFService.buildPurchaseOrderPdf(
-        date: date,
-        totals: _productTotals,
-      );
-
-      await Printing.sharePdf(
-        bytes: pdfData,
-        filename: 'demand_$date.pdf',
-      );
-
-      if (mounted) {
-        _showMessage('PDF exported successfully', isSuccess: true);
-      }
-    } catch (e) {
-      if (mounted) {
-        _showMessage('Failed to export PDF: $e', isError: true);
-      }
-    }
+  Widget _buildStatRow(String label, String value, IconData icon) {
+    return Row(
+      children: [
+        Icon(icon, size: 18, color: Colors.grey.shade700),
+        const SizedBox(width: 8),
+        Text(
+          label,
+          style: TextStyle(
+            fontSize: 13,
+            color: Colors.grey.shade700,
+          ),
+        ),
+        const Spacer(),
+        Text(
+          value,
+          style: const TextStyle(
+            fontSize: 14,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+      ],
+    );
   }
 
   void _showMessage(String message, {bool isError = false, bool isSuccess = false}) {
@@ -227,14 +336,14 @@ class _DemandScreenState extends State<DemandScreen> {
         behavior: SnackBarBehavior.floating,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
         margin: const EdgeInsets.all(8),
+        duration: const Duration(seconds: 2),
       ),
     );
   }
 
   @override
   Widget build(BuildContext context) {
-    final today = DateTime.now();
-    final dateStr = '${today.day}/${today.month}/${today.year}';
+    debugPrint('🎨 Building DemandScreen - isLoading: $_isLoading');
 
     return Scaffold(
       backgroundColor: const Color(0xFFF5F5F5),
@@ -247,8 +356,8 @@ class _DemandScreenState extends State<DemandScreen> {
               style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
             ),
             Text(
-              dateStr,
-              style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+              DateFormat('EEEE, dd MMM yyyy').format(_batchDate),
+              style: const TextStyle(fontSize: 11, fontWeight: FontWeight.normal),
             ),
           ],
         ),
@@ -256,30 +365,43 @@ class _DemandScreenState extends State<DemandScreen> {
         foregroundColor: Colors.black87,
         elevation: 0,
         actions: [
-          if (!_isBatchClosed && _productTotals.isNotEmpty)
-            TextButton.icon(
-              onPressed: _closeBatch,
-              icon: const Icon(Icons.check_circle_outline, size: 20),
-              label: const Text('Close'),
-              style: TextButton.styleFrom(
-                foregroundColor: Colors.green,
+          // Close button (conditional)
+          if (_currentBatchId != null && !_isBatchClosed && _productTotals.isNotEmpty)
+            Container(
+              margin: const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
+              child: ElevatedButton.icon(
+                onPressed: _closeBatch,
+                icon: const Icon(Icons.lock_clock, size: 16),
+                label: const Text('Close', style: TextStyle(fontSize: 13)),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.green.shade600,
+                  foregroundColor: Colors.white,
+                  elevation: 0,
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                ),
               ),
             ),
+
+          // History button (always visible)
           IconButton(
             onPressed: () async {
               final result = await Navigator.push(
                 context,
-                MaterialPageRoute(
-                  builder: (context) => const DemandHistoryScreen(),
-                ),
+                MaterialPageRoute(builder: (_) => const DemandHistoryScreen()),
               );
-              if (result == true) {
-                _loadData();
-              }
+              if (result == true && mounted) _loadData();
             },
             icon: const Icon(Icons.history),
-            tooltip: 'History',
+            tooltip: 'View History',
+            style: IconButton.styleFrom(
+              backgroundColor: Colors.blue.shade50,
+              foregroundColor: Colors.blue.shade700,
+            ),
           ),
+          const SizedBox(width: 8),
         ],
       ),
       body: _isLoading
@@ -292,20 +414,31 @@ class _DemandScreenState extends State<DemandScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              if (_isBatchClosed)
-                _buildClosedBanner()
-              else
-                _buildEntryForm(),
+              Builder(
+                builder: (context) {
+                  debugPrint('🎨 UI DECISION:');
+                  debugPrint('   - batchId: $_currentBatchId');
+                  debugPrint('   - batchExists: $_batchExists');
+                  debugPrint('   - isClosed: $_isBatchClosed');
+                  debugPrint('   - totals: ${_productTotals.length}');
 
-              if (_productTotals.isNotEmpty) ...[
-                const SizedBox(height: 24),
-                _buildProductTotals(),
-              ],
+                  // Decision logic
+                  if (_currentBatchId == null || _productTotals.isEmpty) {
+                    debugPrint('   → Showing CREATE screen');
+                    return _buildCreateNewDemand();
+                  }
 
-              if (_clientOrders.isNotEmpty) ...[
-                const SizedBox(height: 24),
-                _buildClientOrders(),
-              ],
+                  if (_isBatchClosed) {
+                    debugPrint('   → Showing CLOSED screen');
+                    return _buildClosedDemandCard();
+                  }
+
+                  debugPrint('   → Showing OPEN screen');
+                  return _buildOpenDemandCard();
+                },
+              ),
+
+              const SizedBox(height: 20),
             ],
           ),
         ),
@@ -313,35 +446,73 @@ class _DemandScreenState extends State<DemandScreen> {
     );
   }
 
-  Widget _buildClosedBanner() {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.orange.shade50,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.orange.shade200),
-      ),
-      child: Row(
+  // ✅ NEW: When no demand exists for today
+  Widget _buildCreateNewDemand() {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(Icons.info_outline, color: Colors.orange.shade700),
-          const SizedBox(width: 12),
-          Expanded(
+          const SizedBox(height: 40),
+          Container(
+            padding: const EdgeInsets.all(24),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(16),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.05),
+                  blurRadius: 10,
+                  offset: const Offset(0, 2),
+                ),
+              ],
+            ),
             child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+                Icon(Icons.add_shopping_cart, size: 64, color: Colors.blue.shade300),
+                const SizedBox(height: 16),
                 Text(
-                  'Today\'s demand is closed',
+                  'No Demand Created Yet',
                   style: TextStyle(
-                    fontWeight: FontWeight.w600,
-                    color: Colors.orange.shade900,
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.grey.shade800,
                   ),
                 ),
-                const SizedBox(height: 4),
+                const SizedBox(height: 8),
                 Text(
-                  'Stock has been updated. You can view the summary below.',
+                  'Create today\'s demand order',
                   style: TextStyle(
-                    fontSize: 13,
-                    color: Colors.orange.shade700,
+                    fontSize: 14,
+                    color: Colors.grey.shade600,
+                  ),
+                ),
+                const SizedBox(height: 24),
+                ElevatedButton.icon(
+                  onPressed: () async {
+                    // Navigate to edit screen in CREATE mode
+                    final result = await Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => DemandEditScreen(
+                          batchDate: _batchDate,
+                          isNewBatch: true,
+                        ),
+                      ),
+                    );
+                    if (result == true) _loadData();
+                  },
+                  icon: const Icon(Icons.add, size: 24),
+                  label: const Text(
+                    'Create Today\'s Demand',
+                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                  ),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.blue.shade600,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
                   ),
                 ),
               ],
@@ -352,119 +523,281 @@ class _DemandScreenState extends State<DemandScreen> {
     );
   }
 
-  Widget _buildEntryForm() {
+  // ✅ NEW: When demand is closed
+  Widget _buildClosedDemandCard() {
+    return Column(
+      children: [
+        // Closed Banner
+        Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              colors: [Colors.green.shade50, Colors.green.shade100],
+            ),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: Colors.green.shade300),
+          ),
+          child: Column(
+            children: [
+              Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Icon(Icons.check_circle, color: Colors.green.shade700, size: 32),
+                  ),
+                  const SizedBox(width: 16),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Today\'s Demand Closed',
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 16,
+                            color: Colors.green.shade900,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          'Order finalized • ${_productTotals.length} products',
+                          style: TextStyle(
+                            fontSize: 13,
+                            color: Colors.green.shade700,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 16),
+              ElevatedButton.icon(
+                onPressed: () async {
+                  final result = await Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => DemandEditScreen(
+                        batchId: _currentBatchId!,
+                        batchDate: _batchDate,
+                        isNewBatch: false,
+                      ),
+                    ),
+                  );
+                  if (result == true) _loadData();
+                },
+                icon: const Icon(Icons.edit, size: 20),
+                label: const Text('EDIT TODAY\'S DEMAND'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.green.shade600,
+                  foregroundColor: Colors.white,
+                  minimumSize: const Size(double.infinity, 48),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 16),
+        _buildStatsCards(),
+        const SizedBox(height: 16),
+        _buildProductSummary(),
+      ],
+    );
+  }
+
+  // ✅ NEW: When demand is open (in progress)
+  Widget _buildOpenDemandCard() {
+    return Column(
+      children: [
+        // Status Banner
+        Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              colors: [Colors.blue.shade50, Colors.blue.shade100],
+            ),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: Colors.blue.shade300),
+          ),
+          child: Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Icon(Icons.edit_calendar, color: Colors.blue.shade700),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Demand In Progress',
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 15,
+                        color: Colors.blue.shade900,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      '${_productTotals.length} products added',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Colors.blue.shade700,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              if (_productTotals.isNotEmpty)
+                ElevatedButton.icon(
+                  onPressed: _closeBatch,
+                  icon: const Icon(Icons.lock_clock, size: 16),
+                  label: const Text('Close'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.green.shade600,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 16),
+
+        // Edit Button
+        SizedBox(
+          width: double.infinity,
+          height: 56,
+          child: ElevatedButton.icon(
+            onPressed: () async {
+              final result = await Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => DemandEditScreen(
+                    batchId: _currentBatchId!,
+                    batchDate: _batchDate,
+                    isNewBatch: false,
+                  ),
+                ),
+              );
+              if (result == true) _loadData();
+            },
+            icon: const Icon(Icons.edit_note, size: 24),
+            label: const Text(
+              'MANAGE DEMAND ENTRIES',
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+            ),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.blue.shade600,
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+            ),
+          ),
+        ),
+
+        if (_batchStats != null) ...[
+          const SizedBox(height: 16),
+          _buildStatsCards(),
+        ],
+
+        if (_productTotals.isNotEmpty) ...[
+          const SizedBox(height: 16),
+          _buildProductSummary(),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildStatsCards() {
+    return Row(
+      children: [
+        Expanded(
+          child: _buildStatCard(
+            'Products',
+            '${_batchStats?['productCount'] ?? 0}',
+            Icons.inventory_2,
+            Colors.purple,
+          ),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: _buildStatCard(
+            'Clients',
+            '${_batchStats?['clientCount'] ?? 0}',
+            Icons.people,
+            Colors.blue,
+          ),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: _buildStatCard(
+            'Total Qty',
+            (_batchStats?['totalQuantity'] ?? 0).toStringAsFixed(0),
+            Icons.shopping_cart,
+            Colors.orange,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildStatCard(String label, String value, IconData icon, Color color) {
     return Container(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: color.withOpacity(0.2)),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.05),
+            color: Colors.black.withOpacity(0.03),
             blurRadius: 10,
             offset: const Offset(0, 2),
           ),
         ],
       ),
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text(
-            'Add Demand Entry',
+          Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: color.withOpacity(0.1),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Icon(icon, size: 20, color: color),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            value,
             style: TextStyle(
-              fontSize: 16,
-              fontWeight: FontWeight.w600,
+              fontSize: 20,
+              fontWeight: FontWeight.bold,
+              color: color,
             ),
           ),
-          const SizedBox(height: 16),
-
-          // Client dropdown - FIXED
-          DropdownButtonFormField<int>(
-            value: _selectedClientId,
-            decoration: InputDecoration(
-              labelText: 'Select Client',
-              prefixIcon: const Icon(Icons.person_outline, size: 20),
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(8),
-              ),
-              contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
-            ),
-            isExpanded: true,
-            items: _clients.map((client) {
-              return DropdownMenuItem<int>(
-                value: client.id,
-                child: Text(
-                  client.name,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              );
-            }).toList(),
-            onChanged: (value) => setState(() => _selectedClientId = value),
-          ),
-
-          const SizedBox(height: 12),
-
-          // Product dropdown - FIXED: Removed Expanded widget
-          DropdownButtonFormField<int>(
-            value: _selectedProductId,
-            decoration: InputDecoration(
-              labelText: 'Select Product',
-              prefixIcon: const Icon(Icons.inventory_2_outlined, size: 20),
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(8),
-              ),
-              contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
-            ),
-            isExpanded: true,
-            items: _products.map((product) {
-              return DropdownMenuItem<int>(
-                value: product.id,
-                child: Text(
-                  '${product.name} - ₹${product.price}',
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontSize: 14),
-                ),
-              );
-            }).toList(),
-            onChanged: (value) => setState(() => _selectedProductId = value),
-          ),
-
-          const SizedBox(height: 12),
-
-          // Quantity field
-          TextField(
-            controller: _quantityController,
-            keyboardType: const TextInputType.numberWithOptions(decimal: true),
-            inputFormatters: [
-              FilteringTextInputFormatter.allow(RegExp(r'^\d*\.?\d{0,2}')),
-            ],
-            decoration: InputDecoration(
-              labelText: 'Quantity',
-              prefixIcon: const Icon(Icons.numbers, size: 20),
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(8),
-              ),
-              contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
-            ),
-          ),
-
-          const SizedBox(height: 16),
-
-          // Add button
-          SizedBox(
-            width: double.infinity,
-            height: 48,
-            child: ElevatedButton.icon(
-              onPressed: _addDemandEntry,
-              icon: const Icon(Icons.add, size: 20),
-              label: const Text('Add Entry'),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.blue.shade600,
-                foregroundColor: Colors.white,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(8),
-                ),
-              ),
+          const SizedBox(height: 2),
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 11,
+              color: Colors.grey.shade600,
             ),
           ),
         ],
@@ -472,7 +805,7 @@ class _DemandScreenState extends State<DemandScreen> {
     );
   }
 
-  Widget _buildProductTotals() {
+  Widget _buildProductSummary() {
     return Container(
       decoration: BoxDecoration(
         color: Colors.white,
@@ -486,46 +819,23 @@ class _DemandScreenState extends State<DemandScreen> {
         ],
       ),
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Padding(
             padding: const EdgeInsets.all(16),
             child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
+                Container(
+                  padding: const EdgeInsets.all(6),
+                  decoration: BoxDecoration(
+                    color: Colors.purple.shade50,
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Icon(Icons.summarize, size: 18, color: Colors.purple.shade700),
+                ),
+                const SizedBox(width: 10),
                 const Text(
                   'Product Summary',
-                  style: TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-                Row(
-                  children: [
-                    if (_productTotals.isNotEmpty)
-                      IconButton(
-                        onPressed: _exportPdf,
-                        icon: const Icon(Icons.picture_as_pdf, size: 20),
-                        color: Colors.red,
-                        tooltip: 'Export PDF',
-                      ),
-                    if (_currentBatchId != null)
-                      IconButton(
-                        onPressed: () {
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (context) => DemandDetailsScreen(
-                                batchId: _currentBatchId!,
-                              ),
-                            ),
-                          );
-                        },
-                        icon: const Icon(Icons.visibility, size: 20),
-                        color: Colors.blue,
-                        tooltip: 'View Details',
-                      ),
-                  ],
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
                 ),
               ],
             ),
@@ -535,7 +845,7 @@ class _DemandScreenState extends State<DemandScreen> {
             shrinkWrap: true,
             physics: const NeverScrollableScrollPhysics(),
             itemCount: _productTotals.length,
-            separatorBuilder: (context, index) => const Divider(height: 1),
+            separatorBuilder: (_, __) => const Divider(height: 1),
             itemBuilder: (context, index) {
               final item = _productTotals[index];
               return ListTile(
@@ -546,11 +856,7 @@ class _DemandScreenState extends State<DemandScreen> {
                     color: Colors.blue.shade50,
                     borderRadius: BorderRadius.circular(8),
                   ),
-                  child: Icon(
-                    Icons.inventory_2,
-                    size: 20,
-                    color: Colors.blue.shade600,
-                  ),
+                  child: Icon(Icons.inventory_2, size: 20, color: Colors.blue.shade600),
                 ),
                 title: Text(
                   item['productName'] ?? '',
@@ -564,10 +870,7 @@ class _DemandScreenState extends State<DemandScreen> {
                   ),
                   child: Text(
                     'Qty: ${item['totalQty'] ?? 0}',
-                    style: const TextStyle(
-                      fontWeight: FontWeight.w600,
-                      fontSize: 13,
-                    ),
+                    style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
                   ),
                 ),
               );
@@ -578,106 +881,4 @@ class _DemandScreenState extends State<DemandScreen> {
     );
   }
 
-  Widget _buildClientOrders() {
-    // Group by client
-    final Map<String, List<Map<String, dynamic>>> groupedOrders = {};
-    for (final order in _clientOrders) {
-      final clientName = order['clientName'] ?? 'Unknown';
-      groupedOrders.putIfAbsent(clientName, () => []).add(order);
-    }
-
-    return Container(
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(12),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.05),
-            blurRadius: 10,
-            offset: const Offset(0, 2),
-          ),
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Padding(
-            padding: EdgeInsets.all(16),
-            child: Text(
-              'Client Orders',
-              style: TextStyle(
-                fontSize: 16,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-          ),
-          const Divider(height: 1),
-          ListView.separated(
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            itemCount: groupedOrders.length,
-            separatorBuilder: (context, index) => const Divider(height: 1),
-            itemBuilder: (context, index) {
-              final clientName = groupedOrders.keys.elementAt(index);
-              final orders = groupedOrders[clientName]!;
-
-              return ExpansionTile(
-                leading: CircleAvatar(
-                  backgroundColor: Colors.green.shade50,
-                  child: Text(
-                    clientName[0].toUpperCase(),
-                    style: TextStyle(
-                      color: Colors.green.shade700,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                ),
-                title: Text(
-                  clientName,
-                  style: const TextStyle(fontWeight: FontWeight.w500),
-                ),
-                subtitle: Text(
-                  '${orders.length} items',
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: Colors.grey.shade600,
-                  ),
-                ),
-                children: orders.map((order) {
-                  return Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                    child: Row(
-                      children: [
-                        const SizedBox(width: 40),
-                        Expanded(
-                          child: Text(
-                            order['productName'] ?? '',
-                            style: const TextStyle(fontSize: 14),
-                          ),
-                        ),
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                          decoration: BoxDecoration(
-                            color: Colors.grey.shade100,
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                          child: Text(
-                            'Qty: ${order['qty']}',
-                            style: const TextStyle(
-                              fontSize: 12,
-                              fontWeight: FontWeight.w500,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  );
-                }).toList(),
-              );
-            },
-          ),
-        ],
-      ),
-    );
-  }
 }
