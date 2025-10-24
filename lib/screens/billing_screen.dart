@@ -1,4 +1,4 @@
-// lib/screens/billing_screen.dart - v2.0 (Intelligent & Smooth)
+// lib/screens/billing_screen.dart - v2.1 (Keyboard Auto-Dismiss Fix)
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
@@ -32,7 +32,17 @@ class _BillingScreenState extends State<BillingScreen> {
   // UI Control
   bool _saving = false;
   bool _isLoading = true;
+
+  // ✅ ADDED: Controllers for both autocomplete fields
   final TextEditingController _clientController = TextEditingController();
+  final TextEditingController _productController = TextEditingController();
+
+  // ✅ ADDED: Focus nodes for manual focus control
+  final FocusNode _clientFocusNode = FocusNode();
+  final FocusNode _productFocusNode = FocusNode();
+
+  // ✅ ADDED: Scroll controller for auto-scrolling
+  final ScrollController _scrollController = ScrollController();
 
   double get totalAmount => items.fold(0.0, (sum, it) => sum + (it.price * it.quantity));
 
@@ -45,6 +55,10 @@ class _BillingScreenState extends State<BillingScreen> {
   @override
   void dispose() {
     _clientController.dispose();
+    _productController.dispose();
+    _clientFocusNode.dispose();
+    _productFocusNode.dispose();
+    _scrollController.dispose();
     super.dispose();
   }
 
@@ -74,6 +88,17 @@ class _BillingScreenState extends State<BillingScreen> {
           selectedClientId = clientId;
           _isLoading = false;
         });
+
+        // ✅ Set initial client name if editing
+        if (clientId != null) {
+          final client = clients.firstWhere(
+                (c) => c.id == clientId,
+            orElse: () => Client(id: -1, name: '', phone: '', address: ''),
+          );
+          if (client.id != -1) {
+            _clientController.text = '${client.name} • ${client.phone ?? ''}';
+          }
+        }
       }
     } catch (e) {
       if (mounted) {
@@ -95,16 +120,19 @@ class _BillingScreenState extends State<BillingScreen> {
     return true;
   }
 
-  // ✅ UPDATED: Uses the correct, non-deprecated method `updateBillComplete`
   Future<void> _saveBill() async {
     if (_saving) return;
 
     if (selectedClientId == null) {
       _showSnackBar("Please select a client", isError: true);
+      // ✅ Auto-focus client field
+      _clientFocusNode.requestFocus();
       return;
     }
     if (items.isEmpty) {
       _showSnackBar("Add at least one product", isError: true);
+      // ✅ Auto-focus product field
+      _productFocusNode.requestFocus();
       return;
     }
     if (!_hasSufficientStock()) return;
@@ -123,8 +151,8 @@ class _BillingScreenState extends State<BillingScreen> {
         id: widget.existingBill?.id,
         clientId: selectedClientId!,
         totalAmount: totalAmount,
-        paidAmount: widget.existingBill?.paidAmount ?? 0, // Preserve paid amount on edit
-        carryForward: 0, // Carry forward should be recalculated on the server or via a separate process
+        paidAmount: widget.existingBill?.paidAmount ?? 0,
+        carryForward: 0,
         date: DateTime.now(),
       );
 
@@ -164,6 +192,13 @@ class _BillingScreenState extends State<BillingScreen> {
       selectedClientId = null;
       items.clear();
       _clientController.clear();
+      _productController.clear();
+    });
+    // ✅ Focus back to client field
+    Future.delayed(const Duration(milliseconds: 300), () {
+      if (mounted) {
+        _clientFocusNode.requestFocus();
+      }
     });
   }
 
@@ -186,6 +221,17 @@ class _BillingScreenState extends State<BillingScreen> {
       }
     });
     HapticFeedback.lightImpact();
+
+    // ✅ Auto-scroll to items section after adding product
+    Future.delayed(const Duration(milliseconds: 300), () {
+      if (mounted && _scrollController.hasClients) {
+        _scrollController.animateTo(
+          _scrollController.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeOut,
+        );
+      }
+    });
   }
 
   void _increaseQuantity(BillItem item) {
@@ -295,7 +341,6 @@ class _BillingScreenState extends State<BillingScreen> {
           ),
         ],
       ),
-      // ✅ ADDED: AbsorbPointer to prevent taps while saving
       body: AbsorbPointer(
         absorbing: _saving,
         child: Opacity(
@@ -303,6 +348,7 @@ class _BillingScreenState extends State<BillingScreen> {
           child: clients.isEmpty || products.isEmpty
               ? _buildEmptyState()
               : ListView(
+            controller: _scrollController, // ✅ ADDED: Scroll controller
             padding: const EdgeInsets.all(12),
             children: [
               _buildClientCard(),
@@ -329,7 +375,7 @@ class _BillingScreenState extends State<BillingScreen> {
     );
   }
 
-  // ✅ UPDATED: Now a smart, searchable Autocomplete widget
+  // ✅ FIXED: Client card with proper keyboard dismissal and auto-navigation
   Widget _buildClientCard() {
     return Card(
       elevation: 1,
@@ -346,53 +392,150 @@ class _BillingScreenState extends State<BillingScreen> {
               const Spacer(),
               if (selectedClientId != null)
                 Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                    decoration: BoxDecoration(color: Colors.green.shade50, borderRadius: BorderRadius.circular(12)),
-                    child: const Text('Selected', style: TextStyle(fontSize: 10, color: Colors.green, fontWeight: FontWeight.w600))),
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                  decoration: BoxDecoration(color: Colors.green.shade50, borderRadius: BorderRadius.circular(12)),
+                  child: const Text('Selected', style: TextStyle(fontSize: 10, color: Colors.green, fontWeight: FontWeight.w600)),
+                ),
             ]),
             const SizedBox(height: 12),
             Autocomplete<Client>(
               displayStringForOption: (Client option) => '${option.name} • ${option.phone ?? ''}',
+
               optionsBuilder: (TextEditingValue textEditingValue) {
                 if (textEditingValue.text.isEmpty) {
-                  return const Iterable<Client>.empty();
+                  return clients;
                 }
-                return clients.where((Client option) {
-                  final query = textEditingValue.text.toLowerCase();
-                  return option.name.toLowerCase().contains(query) || (option.phone?.contains(query) ?? false);
-                });
+
+                final query = textEditingValue.text.toLowerCase();
+                final filtered = clients.where((Client option) {
+                  return option.name.toLowerCase().contains(query) ||
+                      (option.phone?.contains(query) ?? false);
+                }).toList();
+
+                return filtered;
               },
+
+              // ✅ FIXED: Proper keyboard dismissal and auto-navigation
               onSelected: (Client selection) {
                 setState(() => selectedClientId = selection.id);
                 _clientController.text = '${selection.name} • ${selection.phone ?? ''}';
-                FocusScope.of(context).unfocus();
-              },
-              fieldViewBuilder: (context, controller, focusNode, onFieldSubmitted) {
-                _clientController.text = controller.text;
-                if (selectedClientId != null && _clientController.text.isEmpty) {
-                  final client = clients.firstWhere((c) => c.id == selectedClientId, orElse: () => Client(id: -1, name: '', phone: '', address: ''));
-                  if (client.id != -1) {
-                    _clientController.text = '${client.name} • ${client.phone ?? ''}';
+
+                // ✅ METHOD 1: Unfocus current field
+                _clientFocusNode.unfocus();
+
+                // ✅ METHOD 2: Dismiss all keyboards (more aggressive)
+                FocusManager.instance.primaryFocus?.unfocus();
+
+                // ✅ Auto-navigate to product field after selection
+                Future.delayed(const Duration(milliseconds: 400), () {
+                  if (mounted) {
+                    _productFocusNode.requestFocus();
+
+                    // ✅ Auto-scroll to product section
+                    if (_scrollController.hasClients) {
+                      _scrollController.animateTo(
+                        200, // Approximate position of product card
+                        duration: const Duration(milliseconds: 300),
+                        curve: Curves.easeOut,
+                      );
+                    }
                   }
+                });
+
+                HapticFeedback.selectionClick();
+              },
+
+              fieldViewBuilder: (context, controller, focusNode, onFieldSubmitted) {
+                // Sync controller
+                if (controller != _clientController) {
+                  controller.text = _clientController.text;
+                  controller.selection = _clientController.selection;
                 }
+
                 return TextField(
-                  controller: _clientController,
+                  controller: controller,
                   focusNode: focusNode,
+                  onChanged: (value) => _clientController.text = value,
                   decoration: InputDecoration(
                     labelText: 'Search & Select Client',
-                    hintText: 'Type name or phone number...',
+                    hintText: 'Tap to see all or type to search...',
                     border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
                     prefixIcon: const Icon(Icons.search),
-                    suffixIcon: _clientController.text.isNotEmpty
+                    suffixIcon: controller.text.isNotEmpty
                         ? IconButton(
                       icon: const Icon(Icons.clear),
                       onPressed: () {
+                        controller.clear();
                         _clientController.clear();
                         setState(() => selectedClientId = null);
                         focusNode.requestFocus();
                       },
                     )
                         : null,
+                  ),
+                );
+              },
+
+              optionsViewBuilder: (context, onSelected, options) {
+                return Align(
+                  alignment: Alignment.topLeft,
+                  child: Material(
+                    elevation: 4,
+                    borderRadius: BorderRadius.circular(8),
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(maxHeight: 200, maxWidth: 400),
+                      child: options.isEmpty
+                          ? Container(
+                        padding: const EdgeInsets.all(16),
+                        child: Row(
+                          children: [
+                            Icon(Icons.search_off, color: Colors.grey.shade400),
+                            const SizedBox(width: 12),
+                            Text('No similar client found', style: TextStyle(color: Colors.grey.shade600)),
+                          ],
+                        ),
+                      )
+                          : ListView.builder(
+                        padding: EdgeInsets.zero,
+                        shrinkWrap: true,
+                        itemCount: options.length,
+                        itemBuilder: (context, index) {
+                          final client = options.elementAt(index);
+                          return InkWell(
+                            onTap: () => onSelected(client),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                              decoration: BoxDecoration(
+                                border: Border(bottom: BorderSide(color: Colors.grey.shade200)),
+                              ),
+                              child: Row(
+                                children: [
+                                  CircleAvatar(
+                                    radius: 16,
+                                    backgroundColor: Colors.blue.shade100,
+                                    child: Text(
+                                      client.name.isNotEmpty ? client.name[0].toUpperCase() : '?',
+                                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 12),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Text(client.name, style: const TextStyle(fontWeight: FontWeight.w600)),
+                                        if (client.phone != null && client.phone!.isNotEmpty)
+                                          Text(client.phone!, style: TextStyle(fontSize: 12, color: Colors.grey.shade600)),
+                                      ],
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                    ),
                   ),
                 );
               },
@@ -403,7 +546,7 @@ class _BillingScreenState extends State<BillingScreen> {
     );
   }
 
-  // ✅ UPDATED: Now visually indicates stock status
+  // ✅ FIXED: Product card with keyboard dismissal and field clearing
   Widget _buildProductCard() {
     return Card(
       elevation: 1,
@@ -419,48 +562,170 @@ class _BillingScreenState extends State<BillingScreen> {
               Text('Add Products', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
             ]),
             const SizedBox(height: 12),
-            DropdownButtonFormField<int>(
-              value: null,
-              isExpanded: true,
-              decoration: InputDecoration(
-                contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
-                hintText: 'Choose product to add...',
-              ),
-              items: products.map((product) {
-                final stock = stockMap[product.id] ?? 0;
-                final inCartQty = items.where((it) => it.productId == product.id).fold(0.0, (sum, item) => sum + item.quantity);
 
-                return DropdownMenuItem<int>(
-                  value: product.id,
-                  enabled: stock > 0,
-                  child: Row(
-                    children: [
-                      Container(width: 8, height: 8, decoration: BoxDecoration(shape: BoxShape.circle, color: stock > 0 ? Colors.green : Colors.red)),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          '${product.name} • ${_currencyFormat.format(product.price)} • Stock: ${stock.toInt()}',
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            fontSize: 13,
-                            color: stock > 0 ? null : Colors.red.shade700,
-                            decoration: stock > 0 ? null : TextDecoration.lineThrough,
-                          ),
-                        ),
-                      ),
-                      if (inCartQty > 0)
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                          decoration: BoxDecoration(color: Colors.purple.shade50, borderRadius: BorderRadius.circular(8)),
-                          child: Text('${inCartQty.toInt()}', style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.purple)),
-                        ),
-                    ],
+            Autocomplete<Product>(
+              displayStringForOption: (Product option) {
+                final stock = stockMap[option.id] ?? 0;
+                return '${option.name} • ₹${option.price} • Stock: ${stock.toInt()}';
+              },
+
+              optionsBuilder: (TextEditingValue textEditingValue) {
+                if (textEditingValue.text.isEmpty) {
+                  return products;
+                }
+
+                final query = textEditingValue.text.toLowerCase();
+                return products.where((Product option) {
+                  return option.name.toLowerCase().contains(query);
+                }).toList();
+              },
+
+              // ✅ FIXED: Keyboard dismissal and field clearing
+              onSelected: (Product selection) {
+                _addOrIncrementProductById(selection.id!);
+
+                // ✅ Clear the product search field
+                _productController.clear();
+
+                // ✅ Dismiss keyboard
+                _productFocusNode.unfocus();
+                FocusManager.instance.primaryFocus?.unfocus();
+
+                // ✅ Refresh to clear autocomplete field
+                Future.delayed(const Duration(milliseconds: 100), () {
+                  if (mounted) {
+                    setState(() {});
+                  }
+                });
+
+                HapticFeedback.selectionClick();
+              },
+
+              fieldViewBuilder: (context, controller, focusNode, onFieldSubmitted) {
+                // ✅ Sync with our product controller
+                if (controller != _productController) {
+                  controller.text = _productController.text;
+                  controller.selection = _productController.selection;
+                }
+
+                return TextField(
+                  controller: controller,
+                  focusNode: focusNode,
+                  onChanged: (value) => _productController.text = value,
+                  decoration: InputDecoration(
+                    labelText: 'Search & Add Product',
+                    hintText: 'Tap to see all or type to search...',
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                    prefixIcon: const Icon(Icons.search),
+                    suffixIcon: controller.text.isNotEmpty
+                        ? IconButton(
+                      icon: const Icon(Icons.clear),
+                      onPressed: () {
+                        controller.clear();
+                        _productController.clear();
+                        focusNode.requestFocus();
+                      },
+                    )
+                        : null,
                   ),
                 );
-              }).toList(),
-              onChanged: (pid) {
-                if (pid != null) _addOrIncrementProductById(pid);
+              },
+
+              optionsViewBuilder: (context, onSelected, options) {
+                return Align(
+                  alignment: Alignment.topLeft,
+                  child: Material(
+                    elevation: 4,
+                    borderRadius: BorderRadius.circular(8),
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(maxHeight: 250, maxWidth: 400),
+                      child: options.isEmpty
+                          ? Container(
+                        padding: const EdgeInsets.all(16),
+                        child: Row(
+                          children: [
+                            Icon(Icons.search_off, color: Colors.grey.shade400),
+                            const SizedBox(width: 12),
+                            Text('No similar product found', style: TextStyle(color: Colors.grey.shade600)),
+                          ],
+                        ),
+                      )
+                          : ListView.builder(
+                        padding: EdgeInsets.zero,
+                        shrinkWrap: true,
+                        itemCount: options.length,
+                        itemBuilder: (context, index) {
+                          final product = options.elementAt(index);
+                          final stock = stockMap[product.id] ?? 0;
+                          final inCartQty = items
+                              .where((it) => it.productId == product.id)
+                              .fold(0.0, (sum, item) => sum + item.quantity);
+                          final hasStock = stock > 0;
+
+                          return InkWell(
+                            onTap: hasStock ? () => onSelected(product) : null,
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                              decoration: BoxDecoration(
+                                color: hasStock ? null : Colors.grey.shade50,
+                                border: Border(bottom: BorderSide(color: Colors.grey.shade200)),
+                              ),
+                              child: Row(
+                                children: [
+                                  Container(
+                                    width: 8,
+                                    height: 8,
+                                    decoration: BoxDecoration(
+                                      shape: BoxShape.circle,
+                                      color: hasStock ? Colors.green : Colors.red,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 12),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          product.name,
+                                          style: TextStyle(
+                                            fontWeight: FontWeight.w600,
+                                            color: hasStock ? null : Colors.grey,
+                                            decoration: hasStock ? null : TextDecoration.lineThrough,
+                                          ),
+                                        ),
+                                        const SizedBox(height: 2),
+                                        Text(
+                                          '₹${product.price} • Stock: ${stock.toInt()}',
+                                          style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                  if (inCartQty > 0)
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                      decoration: BoxDecoration(
+                                        color: Colors.purple.shade50,
+                                        borderRadius: BorderRadius.circular(12),
+                                      ),
+                                      child: Text(
+                                        '${inCartQty.toInt()} in cart',
+                                        style: const TextStyle(
+                                          fontSize: 10,
+                                          fontWeight: FontWeight.bold,
+                                          color: Colors.purple,
+                                        ),
+                                      ),
+                                    ),
+                                ],
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                  ),
+                );
               },
             ),
           ],
@@ -468,14 +733,6 @@ class _BillingScreenState extends State<BillingScreen> {
       ),
     );
   }
-
-  // --- (Keep the rest of the file unchanged) ---
-  // The following methods are already well-written and don't need changes:
-  // _buildItemsCard(), _buildTotalSection(), _buildItemRow(), _showSnackBar(),
-  // _showSuccessDialog(), _showConfirmDialog(), _buildEmptyState()
-
-  // NOTE: I've left the original methods below for completeness, but they
-  // are the same as what you provided.
 
   Widget _buildEmptyState() {
     return Center(
@@ -511,26 +768,13 @@ class _BillingScreenState extends State<BillingScreen> {
               children: [
                 const Icon(Icons.shopping_cart, size: 20, color: Colors.orange),
                 const SizedBox(width: 8),
-                const Text(
-                  'Bill Items',
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                ),
+                const Text('Bill Items', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                 const Spacer(),
                 if (items.isNotEmpty)
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                    decoration: BoxDecoration(
-                      color: Colors.blue.shade50,
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: Text(
-                      '${items.length}',
-                      style: const TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.blue,
-                      ),
-                    ),
+                    decoration: BoxDecoration(color: Colors.blue.shade50, borderRadius: BorderRadius.circular(12)),
+                    child: Text('${items.length}', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.blue)),
                   ),
               ],
             ),
@@ -543,10 +787,7 @@ class _BillingScreenState extends State<BillingScreen> {
                   children: [
                     Icon(Icons.shopping_cart_outlined, size: 48, color: Colors.grey.shade300),
                     const SizedBox(height: 12),
-                    Text(
-                      'No items added',
-                      style: TextStyle(color: Colors.grey.shade600),
-                    ),
+                    Text('No items added', style: TextStyle(color: Colors.grey.shade600)),
                   ],
                 ),
               )
@@ -564,37 +805,20 @@ class _BillingScreenState extends State<BillingScreen> {
   Widget _buildTotalSection() {
     return Container(
       padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: Colors.purple,
-        borderRadius: BorderRadius.circular(8),
-      ),
+      decoration: BoxDecoration(color: Colors.purple, borderRadius: BorderRadius.circular(8)),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          const Text(
-            'Total Amount',
-            style: TextStyle(
-              color: Colors.white,
-              fontSize: 16,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-          Text(
-            _currencyFormat.format(totalAmount),
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 20,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
+          const Text('Total Amount', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
+          Text(_currencyFormat.format(totalAmount), style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold)),
         ],
       ),
     );
   }
 
   Widget _buildItemRow(BillItem item) {
-    final product = products.firstWhere((p) => p.id == item.productId, orElse: ()=> Product(id: -1, name: 'Error', price: 0, quantity: 0));
-    if (product.id == -1) return const SizedBox.shrink(); // Don't build row if product not found
+    final product = products.firstWhere((p) => p.id == item.productId, orElse: () => Product(id: -1, name: 'Error', price: 0, quantity: 0));
+    if (product.id == -1) return const SizedBox.shrink();
 
     final stock = stockMap[product.id] ?? 0;
     final itemTotal = item.price * item.quantity;
@@ -616,15 +840,9 @@ class _BillingScreenState extends State<BillingScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      product.name,
-                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
-                    ),
+                    Text(product.name, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
                     const SizedBox(height: 4),
-                    Text(
-                      '${_currencyFormat.format(item.price)} • Stock: ${stock.toInt()}',
-                      style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
-                    ),
+                    Text('${_currencyFormat.format(item.price)} • Stock: ${stock.toInt()}', style: TextStyle(fontSize: 11, color: Colors.grey.shade600)),
                   ],
                 ),
               ),
@@ -641,10 +859,7 @@ class _BillingScreenState extends State<BillingScreen> {
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               Container(
-                decoration: BoxDecoration(
-                  border: Border.all(color: Colors.grey.shade300),
-                  borderRadius: BorderRadius.circular(6),
-                ),
+                decoration: BoxDecoration(border: Border.all(color: Colors.grey.shade300), borderRadius: BorderRadius.circular(6)),
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
@@ -658,15 +873,8 @@ class _BillingScreenState extends State<BillingScreen> {
                       onTap: () => _editQuantity(item),
                       child: Container(
                         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                        decoration: BoxDecoration(
-                          border: Border.symmetric(
-                            vertical: BorderSide(color: Colors.grey.shade300),
-                          ),
-                        ),
-                        child: Text(
-                          '${item.quantity.toInt()}',
-                          style: const TextStyle(fontWeight: FontWeight.bold),
-                        ),
+                        decoration: BoxDecoration(border: Border.symmetric(vertical: BorderSide(color: Colors.grey.shade300))),
+                        child: Text('${item.quantity.toInt()}', style: const TextStyle(fontWeight: FontWeight.bold)),
                       ),
                     ),
                     IconButton(
@@ -680,17 +888,8 @@ class _BillingScreenState extends State<BillingScreen> {
               ),
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                decoration: BoxDecoration(
-                  color: Colors.purple.shade50,
-                  borderRadius: BorderRadius.circular(6),
-                ),
-                child: Text(
-                  _currencyFormat.format(itemTotal),
-                  style: const TextStyle(
-                    color: Colors.purple,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
+                decoration: BoxDecoration(color: Colors.purple.shade50, borderRadius: BorderRadius.circular(6)),
+                child: Text(_currencyFormat.format(itemTotal), style: const TextStyle(color: Colors.purple, fontWeight: FontWeight.bold)),
               ),
             ],
           ),
@@ -767,7 +966,8 @@ class _BillingScreenState extends State<BillingScreen> {
             ElevatedButton(
               onPressed: () => Navigator.of(context).pop(true),
               style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.purple, foregroundColor: Colors.white,
+                backgroundColor: Colors.purple,
+                foregroundColor: Colors.white,
                 padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
               ),
@@ -776,7 +976,8 @@ class _BillingScreenState extends State<BillingScreen> {
           ],
         ),
       ),
-    ) ?? true;
+    ) ??
+        true;
   }
 
   Future<bool> _showConfirmDialog(String title, String message, {String confirmText = 'Confirm'}) async {
@@ -791,13 +992,15 @@ class _BillingScreenState extends State<BillingScreen> {
           ElevatedButton(
             onPressed: () => Navigator.of(context).pop(true),
             style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.orange, foregroundColor: Colors.white,
+              backgroundColor: Colors.orange,
+              foregroundColor: Colors.white,
               padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
             ),
             child: Text(confirmText),
           ),
         ],
       ),
-    ) ?? false;
+    ) ??
+        false;
   }
 }

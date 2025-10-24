@@ -36,7 +36,7 @@ flutter:
   uses-material-design: true
 
   assets:
-   # - assets/images/logo.png   # apna company logo
+    - assets/images/logo.png   # apna company logo
     - assets/fonts/Roboto-Regular.ttf
     - assets/fonts/Roboto-Bold.ttf
     - assets/fonts/OpenSans-Regular.ttf

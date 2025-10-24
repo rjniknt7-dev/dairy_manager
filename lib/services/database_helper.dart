@@ -1194,33 +1194,73 @@ class DatabaseHelper {
   }
 
   // ========================================================================
-  // DEMAND MANAGEMENT
-  // ========================================================================
+// DEMAND MANAGEMENT
+// ========================================================================
 
   String _dateOnlyIso(DateTime dt) => dt.toIso8601String().substring(0, 10);
 
+  /// Get batch ID for a specific date (returns null if not exists, doesn't create)
+  Future<int?> getBatchIdForDate(DateTime date) async {
+    final db = await database;
+    final dateStr = _dateOnlyIso(date);
+
+    debugPrint('🔍 getBatchIdForDate: Searching for date: $dateStr');
+
+    // ✅ FIXED: Use DATE() function to handle both formats
+    final result = await db.rawQuery('''
+    SELECT id, demandDate, closed
+    FROM demand_batch
+    WHERE DATE(demandDate) = ? AND isDeleted = 0
+    LIMIT 1
+  ''', [dateStr]);
+
+    if (result.isEmpty) {
+      debugPrint('⚠️ No batch found for date: $dateStr');
+      return null;
+    }
+
+    final batchId = result.first['id'] as int;
+    final isClosed = (result.first['closed'] as int) == 1;
+    debugPrint('✅ Found batch ID: $batchId (closed: $isClosed) for date: $dateStr');
+    return batchId;
+  }
+
+  /// Get or create batch for a date
   Future<int> getOrCreateBatchForDate(DateTime date) async {
     final db = await database;
     final ds = _dateOnlyIso(date);
-    final rows = await db.query(
-      'demand_batch',
-      where: 'demandDate = ? AND closed = 0 AND isDeleted = 0',
-      whereArgs: [ds],
-      limit: 1,
-    );
-    if (rows.isNotEmpty) return rows.first['id'] as int;
 
+    debugPrint('🔍 getOrCreateBatchForDate: Looking for date: $ds');
+
+    // ✅ FIXED: Use DATE() function
+    final rows = await db.rawQuery('''
+    SELECT id, demandDate, closed
+    FROM demand_batch
+    WHERE DATE(demandDate) = ? AND isDeleted = 0
+    LIMIT 1
+  ''', [ds]);
+
+    if (rows.isNotEmpty) {
+      final batchId = rows.first['id'] as int;
+      final isClosed = (rows.first['closed'] as int) == 1;
+      debugPrint('✅ Found existing batch: $batchId (closed: $isClosed)');
+      return batchId;
+    }
+
+    // ✅ CRITICAL: Store ONLY the date part, no timestamp
     final id = await db.insert('demand_batch', {
-      'demandDate': ds,
+      'demandDate': ds,  // This should be "2025-10-24", not "2025-10-24T00:00:00.000"
       'closed': 0,
       'isSynced': 0,
+      'createdAt': DateTime.now().toIso8601String(),
       'updatedAt': DateTime.now().toIso8601String(),
     });
 
-    debugPrint('✅ Demand batch created (ID: $id)');
+    debugPrint('✅ Created new demand batch (ID: $id) for date: $ds');
     return id;
   }
 
+  /// Get demand history (all batches)
   Future<List<Map<String, dynamic>>> getDemandHistory() async {
     final db = await database;
     return db.query(
@@ -1230,18 +1270,40 @@ class DatabaseHelper {
     );
   }
 
+  /// Get only batches that have entries
+  Future<List<Map<String, dynamic>>> getBatchesWithEntries() async {
+    final db = await database;
+    return await db.rawQuery('''
+    SELECT 
+      db.id,
+      db.demandDate,
+      db.closed,
+      db.createdAt,
+      COUNT(DISTINCT d.id) as entryCount,
+      SUM(d.quantity) as totalQuantity
+    FROM demand_batch db
+    INNER JOIN demand d ON d.batchId = db.id
+    WHERE db.isDeleted = 0 AND d.isDeleted = 0
+    GROUP BY db.id, db.demandDate, db.closed, db.createdAt
+    HAVING entryCount > 0
+    ORDER BY db.demandDate DESC
+  ''');
+  }
+
+  /// Get product totals for a batch
   Future<List<Map<String, dynamic>>> getCurrentBatchTotals(int batchId) async {
     final db = await database;
     return db.rawQuery('''
-      SELECT p.id AS productId, p.name AS productName, SUM(d.quantity) AS totalQty
-      FROM demand d
-      JOIN products p ON p.id = d.productId
-      WHERE d.batchId = ? AND d.isDeleted = 0 AND p.isDeleted = 0
-      GROUP BY d.productId
-      ORDER BY p.name
-    ''', [batchId]);
+    SELECT p.id AS productId, p.name AS productName, SUM(d.quantity) AS totalQty
+    FROM demand d
+    JOIN products p ON p.id = d.productId
+    WHERE d.batchId = ? AND d.isDeleted = 0 AND p.isDeleted = 0
+    GROUP BY d.productId
+    ORDER BY p.name
+  ''', [batchId]);
   }
 
+  /// Get batch by ID
   Future<Map<String, dynamic>?> getBatchById(int batchId) async {
     final db = await database;
     final rows = await db.query(
@@ -1253,36 +1315,78 @@ class DatabaseHelper {
     return rows.isEmpty ? null : rows.first;
   }
 
+  /// Get batch details (product totals)
   Future<List<Map<String, dynamic>>> getBatchDetails(int batchId) async {
     final db = await database;
     return await db.rawQuery('''
-      SELECT 
-        p.id   AS productId,
-        p.name AS productName,
-        SUM(d.quantity) AS totalQty
-      FROM demand d
-      JOIN products p ON p.id = d.productId
-      WHERE d.batchId = ? AND d.isDeleted = 0 AND p.isDeleted = 0
-      GROUP BY p.id
-      ORDER BY p.name
-    ''', [batchId]);
+    SELECT 
+      p.id   AS productId,
+      p.name AS productName,
+      SUM(d.quantity) AS totalQty
+    FROM demand d
+    JOIN products p ON p.id = d.productId
+    WHERE d.batchId = ? AND d.isDeleted = 0 AND p.isDeleted = 0
+    GROUP BY p.id
+    ORDER BY p.name
+  ''', [batchId]);
   }
 
+  /// Get client-wise demand details for a batch
   Future<List<Map<String, dynamic>>> getBatchClientDetails(int batchId) async {
     final db = await database;
     return db.rawQuery('''
-      SELECT c.id AS clientId, c.name AS clientName,
-             p.id AS productId, p.name AS productName,
-             SUM(d.quantity) AS qty
-      FROM demand d
-      JOIN clients c ON c.id = d.clientId
-      JOIN products p ON p.id = d.productId
-      WHERE d.batchId = ? AND d.isDeleted = 0 AND c.isDeleted = 0 AND p.isDeleted = 0
-      GROUP BY c.id, p.id
-      ORDER BY c.name, p.name
-    ''', [batchId]);
+    SELECT c.id AS clientId, c.name AS clientName,
+           p.id AS productId, p.name AS productName,
+           SUM(d.quantity) AS qty
+    FROM demand d
+    JOIN clients c ON c.id = d.clientId
+    JOIN products p ON p.id = d.productId
+    WHERE d.batchId = ? AND d.isDeleted = 0 AND c.isDeleted = 0 AND p.isDeleted = 0
+    GROUP BY c.id, p.id
+    ORDER BY c.name, p.name
+  ''', [batchId]);
   }
 
+  /// Get batch statistics
+  Future<Map<String, dynamic>> getBatchStats(int batchId) async {
+    final db = await database;
+    final result = await db.rawQuery('''
+    SELECT 
+      COUNT(DISTINCT d.productId) as productCount,
+      COUNT(DISTINCT d.clientId) as clientCount,
+      SUM(d.quantity) as totalQuantity,
+      SUM(d.quantity * p.costPrice) as totalCost
+    FROM demand d
+    JOIN products p ON d.productId = p.id
+    WHERE d.batchId = ? AND d.isDeleted = 0
+  ''', [batchId]);
+
+    if (result.isEmpty) {
+      return {
+        'productCount': 0,
+        'clientCount': 0,
+        'totalQuantity': 0.0,
+        'totalCost': 0.0,
+      };
+    }
+
+    return result.first;
+  }
+
+  /// Check if batch has entries
+  Future<bool> batchHasEntries(int batchId) async {
+    final db = await database;
+    final result = await db.rawQuery('''
+    SELECT COUNT(*) as count 
+    FROM demand 
+    WHERE batchId = ? AND isDeleted = 0
+  ''', [batchId]);
+
+    final count = Sqflite.firstIntValue(result) ?? 0;
+    return count > 0;
+  }
+
+  /// Insert demand entry
   Future<int> insertDemandEntry({
     required int batchId,
     required int clientId,
@@ -1297,6 +1401,7 @@ class DatabaseHelper {
       'quantity': quantity,
       'isDeleted': 0,
       'isSynced': 0,
+      'createdAt': DateTime.now().toIso8601String(),
       'updatedAt': DateTime.now().toIso8601String(),
     });
 
@@ -1304,6 +1409,62 @@ class DatabaseHelper {
     return id;
   }
 
+  /// Delete a demand entry (soft delete)
+  Future<int> deleteDemandEntry(int entryId) async {
+    final db = await database;
+    final result = await db.update(
+      'demand',
+      {
+        'isDeleted': 1,
+        'isSynced': 0,
+        'updatedAt': DateTime.now().toIso8601String(),
+      },
+      where: 'id = ?',
+      whereArgs: [entryId],
+    );
+
+    debugPrint('✅ Demand entry soft-deleted (ID: $entryId)');
+    return result;
+  }
+
+  /// Update demand entry quantity
+  Future<int> updateDemandEntry({
+    required int entryId,
+    required double quantity,
+  }) async {
+    final db = await database;
+    final result = await db.update(
+      'demand',
+      {
+        'quantity': quantity,
+        'isSynced': 0,
+        'updatedAt': DateTime.now().toIso8601String(),
+      },
+      where: 'id = ?',
+      whereArgs: [entryId],
+    );
+
+    debugPrint('✅ Demand entry updated (ID: $entryId)');
+    return result;
+  }
+
+  /// Reopen a closed batch
+  Future<void> reopenBatch(int batchId) async {
+    final db = await database;
+    await db.update(
+      'demand_batch',
+      {
+        'closed': 0,
+        'isSynced': 0,
+        'updatedAt': DateTime.now().toIso8601String(),
+      },
+      where: 'id = ?',
+      whereArgs: [batchId],
+    );
+    debugPrint('✅ Batch $batchId reopened for editing');
+  }
+
+  /// Close batch and update stock
   Future<int?> closeBatch(
       int batchId, {
         bool createNextDay = false,
@@ -1312,11 +1473,11 @@ class DatabaseHelper {
     final db = await database;
 
     final productTotals = await db.rawQuery('''
-      SELECT productId, SUM(quantity) AS totalQty
-      FROM demand
-      WHERE batchId = ? AND isDeleted = 0
-      GROUP BY productId
-    ''', [batchId]);
+    SELECT productId, SUM(quantity) AS totalQty
+    FROM demand
+    WHERE batchId = ? AND isDeleted = 0
+    GROUP BY productId
+  ''', [batchId]);
 
     for (final row in productTotals) {
       final pid = row['productId'] as int;
@@ -1350,6 +1511,7 @@ class DatabaseHelper {
     }
     return null;
   }
+
 
   // ========================================================================
   // REPORTING
@@ -1509,6 +1671,7 @@ class DatabaseHelper {
   // UTILITIES
   // ========================================================================
 
+
   Future<bool> clientExists(int id) async {
     final db = await database;
     final result = await db.query(
@@ -1549,6 +1712,14 @@ class DatabaseHelper {
     final db = await database;
     return db.rawQuery(sql, args);
   }
+  Future<int> rawUpdate(
+      String sql, [
+        List<Object?>? args,
+      ]) async {
+    final db = await database;
+    return db.rawUpdate(sql, args);
+  }
+
 
   Future<void> close() async {
     if (_db != null) {
