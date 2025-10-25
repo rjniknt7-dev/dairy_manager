@@ -7,6 +7,7 @@ class Client {
   final String name;
   final String phone;
   final String address;
+  final double balance; // ✅ ADD THIS FIELD
   final DateTime createdAt;
   final DateTime updatedAt;
   final bool isSynced;
@@ -18,6 +19,7 @@ class Client {
     required this.name,
     required this.phone,
     required this.address,
+    this.balance = 0.0, // ✅ ADD DEFAULT VALUE
     DateTime? createdAt,
     DateTime? updatedAt,
     this.isSynced = false,
@@ -32,6 +34,8 @@ class Client {
     'name': name,
     'phone': phone,
     'address': address,
+    'balance': balance, // ✅ ADD TO MAP
+    'createdAt': createdAt.toIso8601String(), // ✅ FIX: Add createdAt
     'updatedAt': updatedAt.toIso8601String(),
     'isSynced': isSynced ? 1 : 0,
     'isDeleted': isDeleted ? 1 : 0,
@@ -41,6 +45,7 @@ class Client {
     'name': name,
     'phone': phone,
     'address': address,
+    'balance': balance, // ✅ ADD TO FIRESTORE
     'createdAt': Timestamp.fromDate(createdAt),
     'updatedAt': Timestamp.fromDate(updatedAt),
   };
@@ -53,6 +58,7 @@ class Client {
       name: (data['name'] ?? '') as String,
       phone: (data['phone'] ?? '') as String,
       address: (data['address'] ?? '') as String,
+      balance: (data['balance'] as num?)?.toDouble() ?? 0.0, // ✅ ADD THIS
       createdAt: _parseTimestamp(data['createdAt']),
       updatedAt: _parseTimestamp(data['updatedAt']),
       isSynced: true,
@@ -66,6 +72,7 @@ class Client {
     name: (map['name'] ?? '') as String,
     phone: (map['phone'] ?? '') as String,
     address: (map['address'] ?? '') as String,
+    balance: (map['balance'] as num?)?.toDouble() ?? 0.0, // ✅ ADD THIS
     createdAt: map['createdAt'] != null
         ? DateTime.parse(map['createdAt'] as String)
         : DateTime.parse(map['updatedAt'] as String),
@@ -86,6 +93,7 @@ class Client {
     String? name,
     String? phone,
     String? address,
+    double? balance, // ✅ ADD THIS
     DateTime? createdAt,
     DateTime? updatedAt,
     bool? isSynced,
@@ -97,6 +105,7 @@ class Client {
       name: name ?? this.name,
       phone: phone ?? this.phone,
       address: address ?? this.address,
+      balance: balance ?? this.balance, // ✅ ADD THIS
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
       isSynced: isSynced ?? this.isSynced,

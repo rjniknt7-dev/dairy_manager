@@ -10,8 +10,8 @@ dependencies:
   path: ^1.9.0
   sqflite: ^2.3.0
   path_provider: ^2.1.2
-  pdf: ^3.11.3           # updated to latest stable
-  printing: ^5.10.0      # updated to latest stable
+  pdf: ^3.11.3
+  printing: ^5.10.0
   intl: ^0.20.2
   share_plus: ^12.0.0
   firebase_core: ^4.1.1
@@ -31,12 +31,19 @@ dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^6.0.0
+  flutter_launcher_icons: ^0.13.1
+
+flutter_icons:
+  android: true
+  ios: true
+  image_path: "assets/icons/app_icon.png"
+  min_sdk_android: 21
 
 flutter:
   uses-material-design: true
 
   assets:
-    - assets/images/logo.png   # apna company logo
+    - assets/images/logo.png
     - assets/fonts/Roboto-Regular.ttf
     - assets/fonts/Roboto-Bold.ttf
     - assets/fonts/OpenSans-Regular.ttf

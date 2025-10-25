@@ -835,6 +835,8 @@ class FirebaseSyncService {
     await _downloadAndMergeLedgerEntries();
     await _downloadAndMergeDemandBatches();
     await _downloadAndMergeDemands();
+    await _processDownloadedBills();
+    await _recalculateClientBalances();
   }
 
   Future<void> _downloadAndMergeClients() async {
@@ -1685,6 +1687,116 @@ class FirebaseSyncService {
     } catch (e) {
       debugPrint('⚠️ Cleanup failed: $e');
     }
+  }
+  // Add this method to process downloaded bills and create related records
+  Future<void> _processDownloadedBills() async {
+    final db = await _dbHelper.database;
+
+    // Find bills that were downloaded but don't have ledger entries
+    final billsWithoutLedger = await db.rawQuery('''
+    SELECT b.*, c.id as localClientId 
+    FROM bills b
+    JOIN clients c ON b.clientId = c.id
+    WHERE b.isDeleted = 0 
+      AND b.isSynced = 1
+      AND NOT EXISTS (
+        SELECT 1 FROM ledger l 
+        WHERE l.billId = b.id AND l.type = 'bill' AND l.isDeleted = 0
+      )
+  ''');
+
+    debugPrint('📥 Processing ${billsWithoutLedger.length} downloaded bills for ledger entries and stock updates');
+
+    for (final billMap in billsWithoutLedger) {
+      final billId = billMap['id'] as int;
+      final clientId = billMap['localClientId'] as int;
+      final totalAmount = (billMap['totalAmount'] as num?)?.toDouble() ?? 0.0;
+      final billDate = billMap['date'] as String;
+
+      try {
+        // 1. Create ledger entry for the bill
+        await db.insert('ledger', {
+          'clientId': clientId,
+          'billId': billId,
+          'type': 'bill',
+          'amount': totalAmount,
+          'date': billDate,
+          'note': 'Bill #$billId',
+          'isSynced': 1, // Mark as synced since it comes from sync
+          'updatedAt': DateTime.now().toIso8601String(),
+          'createdAt': DateTime.now().toIso8601String(),
+        });
+        debugPrint('✅ Created ledger entry for downloaded bill $billId');
+
+        // 2. Update product stock from bill items
+        final billItems = await db.query(
+          'bill_items',
+          where: 'billId = ? AND isDeleted = 0',
+          whereArgs: [billId],
+        );
+
+        for (final itemMap in billItems) {
+          final productId = itemMap['productId'] as int;
+          final quantity = (itemMap['quantity'] as num).toDouble();
+
+          // Deduct from product stock
+          await db.rawUpdate(
+            'UPDATE products SET stock = stock - ?, isSynced = 0, updatedAt = ? WHERE id = ?',
+            [quantity, DateTime.now().toIso8601String(), productId],
+          );
+          debugPrint('✅ Updated stock for product $productId: -$quantity');
+        }
+
+        debugPrint('✅ Processed downloaded bill $billId with ${billItems.length} items');
+
+      } catch (e) {
+        debugPrint('❌ Failed to process downloaded bill $billId: $e');
+      }
+    }
+  }
+
+// Add this method to recalculate client balances
+  Future<void> _recalculateClientBalances() async {
+    final db = await _dbHelper.database;
+
+    // Recalculate balances for all clients
+    final clients = await db.query('clients', where: 'isDeleted = 0');
+
+    for (final client in clients) {
+      final clientId = client['id'] as int;
+
+      final balanceResult = await db.rawQuery('''
+      SELECT 
+        SUM(CASE WHEN type = 'bill' THEN amount ELSE 0 END) as totalBilled,
+        SUM(CASE WHEN type = 'payment' THEN amount ELSE 0 END) as totalPaid
+      FROM ledger 
+      WHERE clientId = ? AND isDeleted = 0
+    ''', [clientId]);
+
+      if (balanceResult.isNotEmpty) {
+        final totalBilled = (balanceResult.first['totalBilled'] as num?)?.toDouble() ?? 0.0;
+        final totalPaid = (balanceResult.first['totalPaid'] as num?)?.toDouble() ?? 0.0;
+        final balance = totalBilled - totalPaid;
+
+        // Update client's balance if different
+        final currentBalance = (client['balance'] as num?)?.toDouble() ?? 0.0;
+        if (currentBalance != balance) {
+          await db.update(
+            'clients',
+            {
+              'balance': balance,
+              'updatedAt': DateTime.now().toIso8601String(),
+              'isSynced': 0, // Mark for sync
+            },
+            where: 'id = ?',
+            whereArgs: [clientId],
+          );
+          debugPrint('✅ Updated balance for client $clientId: $balance');
+        }
+      }
+    }
+
+    debugPrint('✅ Recalculated balances for ${clients.length} clients');
   }
 
   Future<SyncResult> resetSyncStatus() async {

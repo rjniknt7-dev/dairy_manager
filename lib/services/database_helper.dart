@@ -16,7 +16,7 @@ class DatabaseHelper {
 
   static Database? _db;
 
-  static const int DATABASE_VERSION = 28;
+  static const int DATABASE_VERSION = 29;
   static const String DATABASE_NAME = 'dairy_manager_v6.db';
 
   Future<Database> get database async {
@@ -46,7 +46,7 @@ class DatabaseHelper {
     await db.transaction((txn) async {
       await txn.execute('''
         CREATE TABLE clients (
-          id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, phone TEXT, address TEXT,
+          id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, phone TEXT, address TEXT,balance REAL DEFAULT 0.0,
           createdAt TEXT, updatedAt TEXT, firestoreId TEXT UNIQUE,
           isDeleted INTEGER DEFAULT 0, isSynced INTEGER DEFAULT 0
         )
@@ -123,6 +123,9 @@ class DatabaseHelper {
     if (oldVersion < 28) {
       await _runV28Migration(db);
     }
+    if (oldVersion < 29) {
+      await _runV29Migration(db);
+    }
   }
 
   Future<void> _runV27Migration(Database db) async {
@@ -157,6 +160,11 @@ class DatabaseHelper {
       )
     ''');
     debugPrint('✅ Migration to v28 completed (added purchases table).');
+  }
+  Future<void> _runV29Migration(Database db) async {
+    debugPrint('🚀 Applying migration for v29 - Adding balance column...');
+    await _addColumnIfNotExists(db, 'clients', 'balance', 'REAL DEFAULT 0.0');
+    debugPrint('✅ Migration to v29 completed - balance column added');
   }
 
   Future<void> _addColumnIfNotExists(Database db, String table, String column, String type) async {
