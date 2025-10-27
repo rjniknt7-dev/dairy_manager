@@ -1,125 +1,184 @@
 // lib/services/app_initializer.dart
-import 'dart:async';
 import 'package:flutter/foundation.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'backgroud_sync_service.dart';
+import 'firebase_sync_service.dart';
+import 'database_helper.dart';
 
-/// ✅ Inline sync result class
-class SyncResult {
-  final bool success;
-  final String message;
-  SyncResult({required this.success, required this.message});
-}
-
-/// ✅ Inline "sync service" logic (replace with your actual DB/API logic)
-class _InlineSyncService {
-  Future<bool> get canSync async {
-    // TODO: Replace with real connectivity + auth check
-    return true;
-  }
-
-  Future<SyncResult> syncAllData() async {
-    // TODO: Replace with your real sync logic
-    await Future.delayed(const Duration(seconds: 2));
-    return SyncResult(success: true, message: 'Data synced successfully');
-  }
-
-  Future<SyncResult> forceUploadAllData() async {
-    // TODO: Replace with your real force upload logic
-    await Future.delayed(const Duration(seconds: 2));
-    return SyncResult(success: true, message: 'All data force uploaded');
-  }
-
-  Future<Map<String, dynamic>> getSyncStatus() async {
-    return {'status': 'idle'};
-  }
-}
-
-/// ✅ AppInitializer with background sync
+/// ✅ Centralized app initialization service
 class AppInitializer {
   static final AppInitializer _instance = AppInitializer._internal();
   factory AppInitializer() => _instance;
   AppInitializer._internal();
 
-  final _syncService = _InlineSyncService();
-  Timer? _syncTimer;
-  bool _isSyncRunning = false;
-  DateTime? _lastSyncAttempt;
+  final BackgroundSyncService _backgroundSync = BackgroundSyncService();
+  final FirebaseSyncService _syncService = FirebaseSyncService();
+  final DatabaseHelper _dbHelper = DatabaseHelper();
 
-  /// Start background sync (default every 6 hours)
-  void startBackgroundSync({Duration interval = const Duration(hours: 6)}) {
-    if (_isSyncRunning) {
-      debugPrint('⏭️ Background sync already running');
-      return;
-    }
-    _isSyncRunning = true;
+  bool _isInitialized = false;
+  bool get isInitialized => _isInitialized;
 
-    _syncTimer = Timer.periodic(interval, (_) async {
-      await _attemptSync('periodic');
-    });
-
-    debugPrint('✅ Background sync started (interval: ${interval.inHours}h)');
-  }
-
-  /// Attempt sync (internal)
-  Future<void> _attemptSync(String trigger) async {
-    if (!await _syncService.canSync) {
-      debugPrint('📴 Cannot sync ($trigger) - offline or not authenticated');
+  /// ✅ Initialize app (call this in main.dart)
+  Future<void> initialize() async {
+    if (_isInitialized) {
+      debugPrint('⏭️ App already initialized');
       return;
     }
 
-    // Debounce: skip if synced in last 5 minutes
-    if (_lastSyncAttempt != null &&
-        DateTime.now().difference(_lastSyncAttempt!).inMinutes < 5) {
-      debugPrint('⏭️ Skipping sync ($trigger) - recently synced');
-      return;
-    }
-
-    _lastSyncAttempt = DateTime.now();
-    debugPrint('🔄 Sync triggered: $trigger');
+    debugPrint('🚀 Initializing app...');
 
     try {
-      final result = await _syncService.syncAllData();
-      debugPrint('✅ Sync result ($trigger): ${result.message}');
+      // 1. Initialize database
+      await _initializeDatabase();
+
+      // 2. Check if user is authenticated
+      final isAuthenticated = FirebaseAuth.instance.currentUser != null;
+
+      if (isAuthenticated) {
+        // 3. Perform initial sync
+        await _performInitialSync();
+
+        // 4. Start background sync (6 hours interval)
+        _backgroundSync.startBackgroundSync(
+          syncInterval: const Duration(hours: 6),
+        );
+
+        // 5. Schedule cleanup (weekly)
+        await _schedulePeriodicCleanup();
+      } else {
+        debugPrint('👤 User not authenticated - skipping sync');
+      }
+
+      _isInitialized = true;
+      debugPrint('✅ App initialization complete');
+    } catch (e, stackTrace) {
+      debugPrint('❌ App initialization failed: $e');
+      debugPrint('Stack trace: $stackTrace');
+      _isInitialized = false;
+      rethrow;
+    }
+  }
+
+  /// ✅ Initialize database
+  Future<void> _initializeDatabase() async {
+    try {
+      debugPrint('📂 Initializing database...');
+      await _dbHelper.database; // This triggers database creation
+      debugPrint('✅ Database initialized');
     } catch (e) {
-      debugPrint('❌ Sync error ($trigger): $e');
+      debugPrint('❌ Database initialization failed: $e');
+      rethrow;
     }
   }
 
-  /// Manual sync trigger
+  /// ✅ Perform initial sync on app startup
+  Future<void> _performInitialSync() async {
+    try {
+      debugPrint('🔄 Performing initial sync...');
+
+      final prefs = await SharedPreferences.getInstance();
+      final lastSync = prefs.getString('last_full_sync');
+      final shouldForceSync = lastSync == null;
+
+      if (shouldForceSync) {
+        debugPrint('📥 First time sync - restoring from cloud...');
+        final result = await _syncService.restoreFromFirebaseIfEmpty();
+        debugPrint('✅ Initial restore: ${result.message}');
+      } else {
+        debugPrint('🔄 Regular sync...');
+        final result = await _syncService.syncAllData();
+        if (result.success) {
+          debugPrint('✅ Initial sync successful');
+        } else {
+          debugPrint('⚠️ Initial sync failed: ${result.message}');
+        }
+      }
+
+      // Update last sync timestamp
+      await prefs.setString('last_full_sync', DateTime.now().toIso8601String());
+    } catch (e) {
+      debugPrint('⚠️ Initial sync failed: $e (continuing offline)');
+    }
+  }
+
+  /// ✅ Schedule periodic cleanup of old deleted records
+  Future<void> _schedulePeriodicCleanup() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final lastCleanup = prefs.getString('last_cleanup');
+
+      // Only cleanup if last cleanup was more than 7 days ago
+      if (lastCleanup != null) {
+        final lastCleanupDate = DateTime.parse(lastCleanup);
+        if (DateTime.now().difference(lastCleanupDate).inDays < 7) {
+          debugPrint('⏭️ Skipping cleanup - last cleanup was ${DateTime.now().difference(lastCleanupDate).inDays} days ago');
+          return;
+        }
+      }
+
+      debugPrint('🧹 Performing periodic cleanup...');
+      await _backgroundSync.cleanupOldRecords(daysOld: 90);
+      await prefs.setString('last_cleanup', DateTime.now().toIso8601String());
+      debugPrint('✅ Cleanup complete');
+    } catch (e) {
+      debugPrint('⚠️ Cleanup failed: $e');
+    }
+  }
+
+  /// ✅ Manual sync trigger
   Future<SyncResult> manualSync() async {
-    if (!await _syncService.canSync) {
-      return SyncResult(
-          success: false,
-          message: 'No internet connection or not logged in');
-    }
-
-    debugPrint('🔄 Manual sync triggered');
-    _lastSyncAttempt = DateTime.now();
-    return await _syncService.syncAllData();
+    return await _backgroundSync.syncNow();
   }
 
-  /// Force upload all local data
+  /// ✅ Force upload all local data
   Future<SyncResult> forceUploadAll() async {
-    if (!await _syncService.canSync) {
-      return SyncResult(
-          success: false,
-          message: 'No internet connection or not logged in');
-    }
-
-    debugPrint('⬆️ Force upload triggered');
-    return await _syncService.forceUploadAllData();
+    return await _backgroundSync.forceUploadAll();
   }
 
-  /// Get last sync info / status
+  /// ✅ Get sync status
   Future<Map<String, dynamic>> getSyncStatus() async {
-    final status = await _syncService.getSyncStatus();
-    status['lastSyncAttempt'] = _lastSyncAttempt?.toIso8601String();
-    return status;
+    return await _backgroundSync.getSyncStatus();
   }
 
-  /// Stop background sync
+  /// ✅ Reset app (useful for logout or troubleshooting)
+  Future<void> resetApp() async {
+    try {
+      debugPrint('🔄 Resetting app...');
+
+      // Stop background sync
+      _backgroundSync.dispose();
+
+      // Clear preferences
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.clear();
+
+      // Reset sync status
+      await _syncService.resetSyncStatus();
+
+      _isInitialized = false;
+      debugPrint('✅ App reset complete');
+    } catch (e) {
+      debugPrint('❌ App reset failed: $e');
+      rethrow;
+    }
+  }
+
+  /// ✅ Cleanup on app close
   void dispose() {
-    _syncTimer?.cancel();
-    _isSyncRunning = false;
-    debugPrint('🛑 Background sync stopped');
+    _backgroundSync.dispose();
+    _isInitialized = false;
+    debugPrint('🛑 App initializer disposed');
+  }
+
+  /// ✅ Get initialization status with details
+  Map<String, dynamic> getStatus() {
+    return {
+      'initialized': _isInitialized,
+      'syncRunning': _backgroundSync.isSyncing,
+      'backgroundSyncEnabled': _backgroundSync.isRunning,
+      'lastSync': _backgroundSync.lastSyncAttempt?.toIso8601String(),
+      'authenticated': FirebaseAuth.instance.currentUser != null,
+    };
   }
 }
